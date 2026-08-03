@@ -71,26 +71,51 @@ Create `run_tests.sh`:
 ```bash
 #!/bin/sh
 # Test runner.  "pure" needs no FreeCAD; "fc" runs inside the flatpak.
+#
+# A harness that cannot fail is worse than no harness, so both halves take
+# care to propagate a real failure while tolerating "no tests written yet".
 set -e
 ROOT=$(cd "$(dirname "$0")" && pwd)
 FC="flatpak run --command=freecadcmd org.freecad.FreeCAD"
 NOISE='^FreeCAD 1|^\(C\)|Importing|%\)|free and open'
 
+# unittest discover exits 5 when a pattern matches no file, which is the
+# normal state early in the build.  Tolerate ONLY 5 -- a real test failure is
+# exit 1 and must still propagate.
+run_pure() {
+    set +e
+    PYTHONPATH="$ROOT/FreeCADTapDie:$ROOT" python3 -m unittest discover \
+        -s "$ROOT/tests" -p "$1" -v
+    status=$?
+    set -e
+    [ "$status" -eq 5 ] && return 0
+    return "$status"
+}
+
 case "${1:-all}" in
   pure)
-    PYTHONPATH="$ROOT/FreeCADTapDie:$ROOT" python3 -m unittest discover \
-        -s "$ROOT/tests" -p 'test_form.py' -v
-    PYTHONPATH="$ROOT/FreeCADTapDie:$ROOT" python3 -m unittest discover \
-        -s "$ROOT/tests" -p 'test_presets.py' -v
+    run_pure 'test_form.py'
+    run_pure 'test_presets.py'
     ;;
   fc)
-    $FC "$ROOT/tests/run_fc.py" 2>&1 | grep -vE "$NOISE"
+    # Piping into grep would hand back grep's exit status, not freecadcmd's,
+    # and this is /bin/sh with no pipefail.  Capture output, keep the status.
+    out="$ROOT/.fc-test-output"
+    set +e
+    $FC "$ROOT/tests/run_fc.py" > "$out" 2>&1
+    status=$?
+    set -e
+    grep -vE "$NOISE" "$out" || true
+    rm -f "$out"
+    exit "$status"
     ;;
   all)
     "$0" pure && "$0" fc
     ;;
 esac
 ```
+
+Add `.fc-test-output` to `.gitignore`.
 
 ```bash
 chmod +x run_tests.sh
@@ -107,6 +132,7 @@ freecadcmd executes a script, not a test runner, so unittest is driven by
 hand.  Exits non-zero on failure so run_tests.sh propagates the result.
 """
 
+import importlib.util
 import os
 import sys
 import unittest
@@ -120,10 +146,18 @@ MODULES = ["tests.test_cutter", "tests.test_selection", "tests.test_integration"
 suite = unittest.TestSuite()
 loader = unittest.TestLoader()
 for name in MODULES:
+    # Distinguish "file does not exist yet" from "file exists but is broken".
+    # find_spec locates the module without executing it, so a genuine import
+    # error inside an existing test file still reaches loadTestsFromName and
+    # is reported as an ERROR instead of being silently skipped.
     try:
-        suite.addTests(loader.loadTestsFromName(name))
-    except (ImportError, AttributeError):
+        spec = importlib.util.find_spec(name)
+    except (ImportError, AttributeError, ValueError):
+        spec = None
+    if spec is None:
         print("  (skipping %s -- not written yet)" % name)
+        continue
+    suite.addTests(loader.loadTestsFromName(name))
 
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 print("FC TESTS: %d run, %d failures, %d errors"
