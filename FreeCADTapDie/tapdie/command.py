@@ -91,7 +91,15 @@ class ThreadTaskPanel(object):
         try:
             api.create_thread(App.ActiveDocument, self.base, self.sub_name,
                               overrides)
-        except Exception as exc:
+        # Explicit, not `except Exception`: these four are the checked
+        # failure modes create_thread's own docstring/contract promises
+        # (a bad selection, a profile that can't sweep, a cutter/boolean
+        # that wouldn't build, or a bad property value). Anything else --
+        # e.g. a typo'd override key raising AttributeError -- is a
+        # programming error, not a user mistake, and must surface as a
+        # crash/traceback rather than be swallowed into a friendly dialog.
+        except (api.ThreadError, form.ProfileError, selection.SelectionError,
+                ValueError) as exc:
             QtGui.QMessageBox.warning(self.form, "Tap / Die", str(exc))
             return False
         Gui.Control.closeDialog()
