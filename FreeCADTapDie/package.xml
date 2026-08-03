@@ -7,10 +7,11 @@
   <maintainer email="root@init.cx">Alexander</maintainer>
   <license>LGPL-2.1-or-later</license>
   <content>
-    <workbench>
-      <classname>TapDie</classname>
+    <other>
+      <name>TapDie</name>
+      <description>Adds a Tap / Die command to the Part workbench.</description>
       <subdirectory>./</subdirectory>
       <icon>resources/icons/tapdie_cutter.svg</icon>
-    </workbench>
+    </other>
   </content>
 </package>
