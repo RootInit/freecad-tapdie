@@ -85,46 +85,64 @@ def build(points, pitch, height, left_handed=False):
         App.closeDocument(doc.Name)
 
 
-def lead_in_cone(internal, tip_radius, surface_radius, z_face, into_material):
-    """A 45 degree relief cone at one end of the threaded run.
+def lead_in_cone(tip_radius, surface_radius, z_face, into_material):
+    """A 45 degree relief chamfer at one end of the threaded run, built as a
+    REVOLVED PROFILE, never a boolean between primitives.
 
     `tip_radius` is the profile's own most extreme radius -- the first of the
     six (radius, axial) points form.cutter_points returns, which for INTERNAL
     mode is the largest (the cutter's deepest reach, i.e. the thread's root:
     relieving out to it fully clears the first turn) and for EXTERNAL is the
     smallest (the thread's root again, just on the other side -- the
-    narrowest point the tool reaches). Either way the cone tapers between
+    narrowest point the tool reaches). Either way the chamfer tapers between
     `tip_radius` at `z_face` and `surface_radius` moving into the material
     along +Z (`into_material=True`) or -Z (`into_material=False`); 45 degrees
     is fixed here, independent of the thread's own included angle.
 
-    INTERNAL and EXTERNAL are NOT symmetric constructions, despite the
-    tapering math being identical either way -- measured directly: using the
-    plain solid cone for EXTERNAL sliced a 0.33mm3 sliver clean off a test
-    shaft's tip. INTERNAL's bore already has a hollow core for r <
-    surface_radius, so the plain solid cone IS the material to remove: its
-    r < surface_radius portion coincides with that pre-existing void (a
-    no-op when subtracted) and its r in [surface_radius, tip_radius] portion
-    is exactly the funnel bevel wanted. EXTERNAL's shaft has NO such hollow
-    core -- the plain cone's r < tip_radius portion is the shaft's own SOLID
-    material, so subtracting it directly removes the core too. The tool
-    there has to be the annular wedge between the cone surface and the
-    original outer cylinder (cylinder minus cone), which tapers from the
-    full bevel at the face down to nothing at `depth`, leaving the core
-    (tip_radius at the face, widening to surface_radius at depth) untouched.
+    A prior version built this as a cylinder-minus-cone boolean for EXTERNAL
+    (a plain solid cone works for INTERNAL only, because a bore's
+    pre-existing hollow core absorbs it, but a shaft has no such core --
+    see git history). That boolean FAILED to fuse into a single solid at
+    ordinary dimensions found by testing across a length sweep -- M8x1.25 on
+    a 4mm shaft at Length=19.5 and 22.0mm, a narrow OCC tangency band, not an
+    edge case. printed_threads builds every one of its lead-ins by revolving
+    a closed polygon and never hits this class of failure, so that is what
+    this does instead: the profile
+
+        (tip_radius, z_face) -> (surface_radius, z_face)
+        -> (surface_radius, z_face + depth*direction) -> close
+
+    is a closed TRIANGLE in the (radius, axial) plane -- the horizontal edge
+    is the full bevel at the face, the diagonal is the 45 degree cone
+    surface, and the vertical edge (constant r=surface_radius) closes it
+    back, tapering the wedge to zero width exactly at `depth`. Revolving
+    that 360 degrees needs no boolean at all, so there is no tangency for
+    OCC to go degenerate on.
+
+    This ALSO retires the internal/external special-case entirely: the
+    triangle only ever spans r in [surface_radius, tip_radius] (never
+    touching the axis), so for INTERNAL it removes exactly the same
+    material a full solid cone would have (the r < surface_radius portion
+    of that cone was always coincident with the bore's own pre-existing
+    hollow core, a no-op either way), and for EXTERNAL it never touches the
+    shaft's solid core in the first place -- one construction, both modes.
     """
     depth = abs(tip_radius - surface_radius)
     if depth <= 0.0:
         raise CutterError(
             "lead-in chamfer has no depth to cut (tip radius equals surface "
             "radius)")
-    pnt = App.Vector(0, 0, z_face)
-    axis = App.Vector(0, 0, 1.0 if into_material else -1.0)
-    cone = Part.makeCone(tip_radius, surface_radius, depth, pnt, axis)
-    if internal:
-        return cone
-    cyl = Part.makeCylinder(surface_radius, depth, pnt, axis)
-    return cyl.cut(cone)
+    dz = depth if into_material else -depth
+    a = App.Vector(tip_radius, 0.0, z_face)
+    b = App.Vector(surface_radius, 0.0, z_face)
+    c = App.Vector(surface_radius, 0.0, z_face + dz)
+    wire = Part.makePolygon([a, b, c, a])
+    face = Part.Face(wire)
+    solid = face.revolve(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 360.0)
+    if not solid.isValid() or not solid.Solids:
+        raise CutterError(
+            "lead-in chamfer revolve produced an invalid solid")
+    return solid
 
 
 def clip_to_axial_range(shape, z_lo, z_hi, radius_reach):

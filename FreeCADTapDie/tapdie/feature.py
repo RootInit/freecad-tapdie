@@ -5,6 +5,7 @@ boolean -- that is a native Part::Cut, so FreeCAD owns it.
 """
 
 import FreeCAD as App
+import Part
 
 from . import cutter, form, presets
 
@@ -244,29 +245,45 @@ class ThreadCutter(object):
 
         # Lead-in relief: a thread cut straight to a FREE face leaves a
         # sharp, fragile, hard-to-start first turn. At each FREE end (only),
-        # fuse in a 45 degree cone -- fixed, independent of the thread's own
-        # included angle -- wide at the feature's own end plane and tapering
-        # back to the plain surface radius moving into the material. The
-        # cone sits entirely within [feature_lo, feature_hi], never in the
-        # overrun band, so it does not interact with the clamp above.
+        # fuse in a 45 degree chamfer -- fixed, independent of the thread's
+        # own included angle -- wide at the feature's own end plane and
+        # tapering back to the plain surface radius moving into the
+        # material. cutter.lead_in_cone builds it as a revolved profile (one
+        # construction for both Mode values -- see its docstring for why an
+        # internal/external special-case used to exist here and was retired
+        # after it failed to fuse at ordinary dimensions). The chamfer sits
+        # entirely within [feature_lo, feature_hi], never in the overrun
+        # band, so it does not interact with the clamp above.
         if obj.LeadIn and (near_free or far_free):
             tip_radius = points[0][0]
-            internal = obj.Mode == form.INTERNAL
             cones = []
             if near_free:
                 cones.append(cutter.lead_in_cone(
-                    internal, tip_radius, obj.SurfaceRadius.Value, feature_lo,
+                    tip_radius, obj.SurfaceRadius.Value, feature_lo,
                     into_material=True))
             if far_free:
                 cones.append(cutter.lead_in_cone(
-                    internal, tip_radius, obj.SurfaceRadius.Value, feature_hi,
+                    tip_radius, obj.SurfaceRadius.Value, feature_hi,
                     into_material=False))
-            for cone in cones:
-                shape = shape.fuse(cone)
-            if not shape.isValid() or len(shape.Solids) != 1:
+            # COMPOUND, not fuse.  A cutter carrying chamfers is legitimately
+            # DISCONNECTED at some phases: whether the helix's last turn
+            # reaches the chamfer plane depends on where the sweep's fractional
+            # turn falls, so at some lengths a cone is a separate island.
+            # Measured on M8x1.25, 4mm shaft, lengths 18.0..24.0 in 0.5 steps:
+            # the fuse returns a VALID two-solid shape at exactly 19.5 and
+            # 22.0 -- both 0.6 of a turn -- and one solid everywhere else.
+            # The old `!= 1` check read that as a failure and refused to build
+            # an otherwise perfectly good cutter.  removeSplitter() is worse
+            # still: it returns an INVALID solid at 19.0, 21.5 and 24.0.
+            #
+            # A compound sidesteps all of it.  Part::Cut removes every solid in
+            # the tool, connected or not, and building one needs no boolean at
+            # all -- so there is no phase-dependent OCC behaviour left to trip
+            # over.  Do not "tidy" this back into a fuse.
+            shape = Part.makeCompound([shape] + cones)
+            if not shape.isValid() or not shape.Solids:
                 raise cutter.CutterError(
-                    "lead-in chamfer fuse produced an invalid or "
-                    "multi-solid cutter")
+                    "lead-in chamfer compound produced an invalid cutter")
 
         # Do NOT transform the shape itself.  Shape.translate()/.rotate() only
         # set the shape's Location; assigning obj.Shape re-syncs that Location

@@ -32,7 +32,17 @@ class TestThreadCutterFeature(unittest.TestCase):
     def test_recomputes_to_a_valid_solid(self):
         obj = self._cutter()
         self.assertTrue(obj.Shape.isValid())
-        self.assertEqual(len(obj.Shape.Solids), 1)
+        # The CUTTER became a compound when lead-in chamfers arrived: the helix
+        # plus one cone per free end, and those are not always connected --
+        # whether the last turn reaches the chamfer plane depends on where the
+        # sweep's fractional turn falls (see feature.py).  Its solid COUNT is
+        # therefore configuration- and phase-dependent, so asserting 1 was an
+        # over-constraint.  Assert instead that every piece is real.  The
+        # meaningful single-solid property belongs to the CUT RESULT, and the
+        # cut_obj assertions elsewhere in this file still check it exactly.
+        self.assertGreaterEqual(len(obj.Shape.Solids), 1)
+        for solid in obj.Shape.Solids:
+            self.assertTrue(solid.isValid())
 
     def test_editing_pitch_changes_the_shape(self):
         obj = self._cutter()
@@ -156,7 +166,17 @@ class TestLeadInChamfer(unittest.TestCase):
         self.assertTrue(obj.NearEndFree)
         self.assertTrue(obj.FarEndFree)
         self.assertTrue(obj.Shape.isValid())
-        self.assertEqual(len(obj.Shape.Solids), 1)
+        # The CUTTER became a compound when lead-in chamfers arrived: the helix
+        # plus one cone per free end, and those are not always connected --
+        # whether the last turn reaches the chamfer plane depends on where the
+        # sweep's fractional turn falls (see feature.py).  Its solid COUNT is
+        # therefore configuration- and phase-dependent, so asserting 1 was an
+        # over-constraint.  Assert instead that every piece is real.  The
+        # meaningful single-solid property belongs to the CUT RESULT, and the
+        # cut_obj assertions elsewhere in this file still check it exactly.
+        self.assertGreaterEqual(len(obj.Shape.Solids), 1)
+        for solid in obj.Shape.Solids:
+            self.assertTrue(solid.isValid())
 
         tip_radius = self._tip_radius(obj)
         depth = abs(tip_radius - obj.SurfaceRadius.Value)
@@ -264,7 +284,17 @@ class TestLeadInChamfer(unittest.TestCase):
                         "the plain thread's surviving middle span -- the "
                         "chamfers are eating further than their own depth")
         self.assertTrue(obj.Shape.isValid())
-        self.assertEqual(len(obj.Shape.Solids), 1)
+        # The CUTTER became a compound when lead-in chamfers arrived: the helix
+        # plus one cone per free end, and those are not always connected --
+        # whether the last turn reaches the chamfer plane depends on where the
+        # sweep's fractional turn falls (see feature.py).  Its solid COUNT is
+        # therefore configuration- and phase-dependent, so asserting 1 was an
+        # over-constraint.  Assert instead that every piece is real.  The
+        # meaningful single-solid property belongs to the CUT RESULT, and the
+        # cut_obj assertions elsewhere in this file still check it exactly.
+        self.assertGreaterEqual(len(obj.Shape.Solids), 1)
+        for solid in obj.Shape.Solids:
+            self.assertTrue(solid.isValid())
 
     def test_very_short_feature_where_chamfers_overlap_still_builds(self):
         # Deliberately pathological: Length shorter than 2*depth, so the two
@@ -279,7 +309,17 @@ class TestLeadInChamfer(unittest.TestCase):
                         "fixture stopped being the pathological case it "
                         "was meant to test")
         self.assertTrue(obj.Shape.isValid())
-        self.assertEqual(len(obj.Shape.Solids), 1)
+        # The CUTTER became a compound when lead-in chamfers arrived: the helix
+        # plus one cone per free end, and those are not always connected --
+        # whether the last turn reaches the chamfer plane depends on where the
+        # sweep's fractional turn falls (see feature.py).  Its solid COUNT is
+        # therefore configuration- and phase-dependent, so asserting 1 was an
+        # over-constraint.  Assert instead that every piece is real.  The
+        # meaningful single-solid property belongs to the CUT RESULT, and the
+        # cut_obj assertions elsewhere in this file still check it exactly.
+        self.assertGreaterEqual(len(obj.Shape.Solids), 1)
+        for solid in obj.Shape.Solids:
+            self.assertTrue(solid.isValid())
 
     def test_lead_in_false_matches_the_plain_swept_geometry(self):
         # LeadIn=False must reproduce exactly the geometry cutter.build()
@@ -312,7 +352,17 @@ class TestLeadInChamfer(unittest.TestCase):
         obj = self._iso_cutter(mode=form.EXTERNAL, Diameter=4.0, Pitch=0.7,
                                SurfaceRadius=2.0, Length=10.0)
         self.assertTrue(obj.Shape.isValid())
-        self.assertEqual(len(obj.Shape.Solids), 1)
+        # The CUTTER became a compound when lead-in chamfers arrived: the helix
+        # plus one cone per free end, and those are not always connected --
+        # whether the last turn reaches the chamfer plane depends on where the
+        # sweep's fractional turn falls (see feature.py).  Its solid COUNT is
+        # therefore configuration- and phase-dependent, so asserting 1 was an
+        # over-constraint.  Assert instead that every piece is real.  The
+        # meaningful single-solid property belongs to the CUT RESULT, and the
+        # cut_obj assertions elsewhere in this file still check it exactly.
+        self.assertGreaterEqual(len(obj.Shape.Solids), 1)
+        for solid in obj.Shape.Solids:
+            self.assertTrue(solid.isValid())
         half = obj.Length.Value / 2.0
         core_probe = App.Vector(0.15, 0.0, -half + 0.05)
         self.assertFalse(
