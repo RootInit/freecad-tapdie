@@ -57,7 +57,23 @@ def create_thread(doc, base, sub_name, overrides=None):
     try:
         cutter_obj = feature.make_cutter(doc)
         created.append(cutter_obj)
-        for key, value in params.items():
+
+        # ThreadForm and Pitch both re-trigger feature.py's _apply_preset(),
+        # which overwrites Angle/RootLand/CrestLand -- so those two (plus
+        # Mode and Diameter, which the profile math also treats as
+        # structural) must be set FIRST. Applying params in whatever order
+        # the caller's dict happened to iterate silently discarded an
+        # explicit Angle/RootLand/CrestLand override whenever ThreadForm or
+        # Pitch came later in that order; a task-panel submission that
+        # sends every field at once (Task 8's shape) hits this on every
+        # call. Pop from a local copy, not `params` itself, since a caller
+        # could in principle still hold a reference to it via `overrides`.
+        STRUCTURAL = ("Mode", "ThreadForm", "Pitch", "Diameter")
+        remaining = dict(params)
+        for key in STRUCTURAL:
+            if key in remaining:
+                setattr(cutter_obj, key, remaining.pop(key))
+        for key, value in remaining.items():
             setattr(cutter_obj, key, value)
 
         # The link is what creates the dependency, so the cutter recomputes
@@ -66,7 +82,14 @@ def create_thread(doc, base, sub_name, overrides=None):
         cutter_obj.LocalPlacement = local_frame(base, circle)
         doc.recompute()
 
-        if not cutter_obj.Shape.isValid() or not cutter_obj.Shape.Solids:
+        # Check isNull() FIRST: when execute() raises, obj.Shape is left
+        # NULL, and Shape.isNull() -- unlike isValid() and Solids -- is safe
+        # to call on it.  Shape.isValid() on a null shape raises its own
+        # native OCCError ("...NULL shape") before the `or` below is ever
+        # reached, which meant a bad parameter surfaced FreeCAD's cryptic
+        # OCC string to the user instead of this diagnostic.
+        shape = cutter_obj.Shape
+        if shape.isNull() or not shape.isValid() or not shape.Solids:
             raise ThreadError(
                 "cutter did not build; check Diameter, Pitch and the lands")
 

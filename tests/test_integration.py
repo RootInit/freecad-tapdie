@@ -171,13 +171,16 @@ class TestCreateThread(unittest.TestCase):
         # jamming on a plain collar). A generic 3D rotation makes that
         # near-boundary intersection slightly tolerance-sensitive inside
         # the OCC boolean kernel: measured, deterministic, reproducible
-        # residual is 8.8e-4 mm^3 on a ~5347 mm^3 part (1.6e-7 relative) --
-        # confirmed the same to 12 significant figures across repeated
-        # recomputes, so this is boundary-precision noise, not drift. A real
-        # placement bug (the thread reverting to the full uncut volume) is
-        # many mm^3, not fractions of a thousandth -- delta=0.01 still
-        # catches that with 10x margin over the observed noise floor.
-        self.assertAlmostEqual(cut_obj.Shape.Volume, threaded, delta=0.01)
+        # residual is 8.842106e-04 mm^3 on a ~5347 mm^3 part (1.6e-7
+        # relative) -- confirmed to full double precision across 5 reruns,
+        # and independently reswept at rotation angles 1/10/37/90/180
+        # degrees with residuals in the 1e-7..1e-3 mm^3 band. This is
+        # boundary-precision noise from the boolean kernel, not drift, and
+        # nowhere near a real placement bug (the thread reverting to the
+        # full uncut volume is thousands of mm^3, not fractions of a
+        # thousandth). delta=0.002 still gives >2x margin over the largest
+        # observed residual -- do not loosen further without new evidence.
+        self.assertAlmostEqual(cut_obj.Shape.Volume, threaded, delta=0.002)
 
     def test_defaults_pick_M8_for_a_tap_drilled_hole(self):
         base = self._bored_block(bore_radius=3.4)
@@ -190,12 +193,38 @@ class TestCreateThread(unittest.TestCase):
     def test_bad_parameters_raise_rather_than_leaving_junk(self):
         base = self._bored_block()
         before = len(self.doc.Objects)
-        with self.assertRaises(Exception):
+        with self.assertRaises(Exception) as ctx:
             api.create_thread(self.doc, base, self._bore_face(base, 3.4),
                               {"CrestLand": 99.0})
+        # Pins the diagnostic, not just the exception type: when execute()
+        # raises, obj.Shape is left NULL, and Shape.isValid() on a null
+        # shape raises its OWN native OCCError ("...NULL shape") before the
+        # intended ThreadError message is ever reached -- so without the
+        # isNull() check in api.py, this substring would not appear here.
+        self.assertIn("cutter did not build", str(ctx.exception))
         self.doc.recompute()
         self.assertEqual(len(self.doc.Objects), before,
                          "failed creation left objects behind")
+
+    def test_overrides_survive_regardless_of_dict_order(self):
+        """Regression: create_thread applied params in whatever order the
+        caller's dict happened to iterate. ThreadForm and Pitch both
+        re-trigger feature.py's _apply_preset(), which overwrites Angle,
+        RootLand and CrestLand -- so an explicit override of those three
+        silently vanished whenever ThreadForm or Pitch iterated after them
+        in the same dict. Task 8's dialog submits exactly this shape (every
+        field, every time), so this dict order -- RootLand/CrestLand/Angle
+        first, ThreadForm last -- is the realistic one, not a contrived one.
+        """
+        base = self._bored_block()
+        cutter_obj = api.create_thread(
+            self.doc, base, self._bore_face(base, 3.4),
+            {"RootLand": 0.5, "CrestLand": 0.5, "Angle": 77.0,
+             "ThreadForm": form.PRINTED})[0]
+        self.assertEqual(cutter_obj.ThreadForm, form.PRINTED)
+        self.assertAlmostEqual(cutter_obj.Angle.Value, 77.0, places=6)
+        self.assertAlmostEqual(cutter_obj.RootLand.Value, 0.5, places=6)
+        self.assertAlmostEqual(cutter_obj.CrestLand.Value, 0.5, places=6)
 
     def _face_z_range(self, obj, sub_name, axis):
         """The face's real axial extent, read from its own vertices -- not
@@ -276,6 +305,16 @@ class TestCreateThread(unittest.TestCase):
                              "reversed cutter walked off the near end")
         self.assertGreaterEqual(reversed_box.ZMax, z1 - 1e-6,
                                 "reversed cutter walked off the far end")
+        # Matching envelopes are also what a no-op Reversed would produce --
+        # this positively confirms the 180-about-X branch actually ran,
+        # rather than merely checking an outcome a no-op would satisfy too
+        # (the sibling unit test, test_reversed_keeps_the_sweep_centred_on_
+        # the_anchor, caught this gap in feature.py directly; this is the
+        # same check through the AttachedTo/api.py path).
+        self.assertAlmostEqual(cutter_fwd.Placement.Rotation.Angle, 0.0,
+                               places=6)
+        self.assertAlmostEqual(cutter_rev.Placement.Rotation.Angle, math.pi,
+                               places=6)
 
 
 if __name__ == "__main__":
