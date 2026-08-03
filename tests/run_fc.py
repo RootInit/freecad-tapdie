@@ -7,7 +7,7 @@ hand.  Exits non-zero on failure so run_tests.sh propagates the result.
 import os
 import sys
 import unittest
-import importlib
+import importlib.util
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "FreeCADTapDie"))
@@ -19,12 +19,13 @@ suite = unittest.TestSuite()
 loader = unittest.TestLoader()
 for name in MODULES:
     try:
-        # Try to import the module first to catch import errors before
-        # loadTestsFromName wraps them in _FailedTest (Python 3.3+)
-        importlib.import_module(name)
-        suite.addTests(loader.loadTestsFromName(name))
-    except (ImportError, AttributeError):
+        spec = importlib.util.find_spec(name)
+    except (ImportError, AttributeError, ValueError):
+        spec = None
+    if spec is None:
         print("  (skipping %s -- not written yet)" % name)
+        continue
+    suite.addTests(loader.loadTestsFromName(name))
 
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 print("FC TESTS: %d run, %d failures, %d errors"
