@@ -4,8 +4,6 @@ Holds the parameters and produces the cutter solid.  It never performs the
 boolean -- that is a native Part::Cut, so FreeCAD owns it.
 """
 
-import math
-
 import FreeCAD as App
 
 from . import cutter, form, presets
@@ -20,6 +18,12 @@ class ThreadCutter(object):
         self.Type = "ThreadCutter"
         self.add_properties(obj)
         obj.Proxy = self
+        # _apply_preset only runs reactively from onChanged; nothing fires it
+        # on a fresh object, so ThreadForm's default preset (Printed 90) would
+        # otherwise leave Angle/RootLand/CrestLand unlocked despite a preset
+        # being in effect. Apply it once, now that the properties exist and
+        # Proxy is set.
+        self._apply_preset(obj)
 
     def add_properties(self, obj):
         p = obj.addProperty
@@ -115,23 +119,30 @@ class ThreadCutter(object):
         shape = cutter.build(points, obj.Pitch.Value, height,
                              left_handed=obj.LeftHanded)
 
-        # Shape.translate()/.rotate() only set the shape's Location; assigning
-        # obj.Shape re-syncs that Location to the object's CURRENT Placement
-        # (identity, at this point), silently discarding the move. Bake the
-        # transform into the geometry itself with transformGeometry() instead,
-        # which survives the assignment below.
-        move = App.Matrix()
-        move.move(App.Vector(0, 0, -obj.Pitch.Value))
-        shape = shape.transformGeometry(move)
-
+        # Do NOT transform the shape itself.  Shape.translate()/.rotate() only
+        # set the shape's Location; assigning obj.Shape re-syncs that Location
+        # to the object's CURRENT Placement (identity, at this point), so the
+        # move is silently discarded the instant it is assigned below -- this
+        # bit a previous version of this file.  Shape.transformGeometry() does
+        # survive the assignment, but it rebuilds the geometry and converts
+        # the two planar end caps into degree-(1,1) BSpline surfaces, which
+        # reintroduces the BoundBox-on-trimmed-solid trap this project
+        # documents (a rotated, offset case read a BoundBox 1mm off from the
+        # true extent). Folding the same offset into Placement instead keeps
+        # the shape's own geometry -- and its exact Part::GeomPlane end caps
+        # -- untouched.
         if obj.Reversed:
-            # 180 deg about X is a proper rotation, so the helix keeps its
+            # 180 about X is a PROPER rotation, so the helix keeps its
             # handedness while running the other way along the axis.
-            spin = App.Matrix()
-            spin.rotateX(math.radians(180.0))
-            shape = shape.transformGeometry(spin)
+            # Rotating the translation carries -pitch through to +pitch,
+            # which is why the sign flips relative to the forward case.
+            offset = App.Placement(App.Vector(0, 0, obj.Pitch.Value),
+                                   App.Rotation(App.Vector(1, 0, 0), 180.0))
+        else:
+            offset = App.Placement(App.Vector(0, 0, -obj.Pitch.Value),
+                                   App.Rotation())
 
-        obj.Shape = shape
+        obj.Shape = shape        # untransformed
 
         # Part::Cut keeps Base and Tool placements independent, so the cutter
         # has to follow the base itself.  Composing placements is correct under
@@ -139,7 +150,9 @@ class ThreadCutter(object):
         # so this must come after it.
         if obj.AttachedTo is not None:
             obj.Placement = obj.AttachedTo.Placement.multiply(
-                obj.LocalPlacement)
+                obj.LocalPlacement).multiply(offset)
+        else:
+            obj.Placement = offset
 
 
 class ThreadCutterViewProvider(object):

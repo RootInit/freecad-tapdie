@@ -48,6 +48,7 @@ class TestThreadCutterFeature(unittest.TestCase):
         self.doc.recompute()
         self.assertTrue("Invalid" in obj.State or "Touched" in obj.State,
                         "expected an error state, got %s" % obj.State)
+        self.assertIn("leaves no flank", obj.getStatusString())
 
     def test_reversed_runs_the_thread_the_other_way(self):
         obj = self._cutter()
@@ -69,6 +70,13 @@ class TestThreadCutterFeature(unittest.TestCase):
     def test_custom_form_unlocks_the_angle(self):
         obj = self._cutter(ThreadForm=form.CUSTOM)
         self.assertEqual(obj.getEditorMode("Angle"), [])
+
+    def test_fresh_cutter_locks_the_angle_without_any_edits(self):
+        # ThreadForm defaults to a preset (Printed 90), so the lock must be
+        # in effect from construction -- not only once something reactively
+        # triggers onChanged.
+        obj = feature.make_cutter(self.doc)
+        self.assertTrue(obj.getEditorMode("Angle"))
 
 
 if __name__ == "__main__":
