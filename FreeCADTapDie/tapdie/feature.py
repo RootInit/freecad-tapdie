@@ -10,6 +10,80 @@ from . import cutter, form, presets
 
 ICON = "tapdie_cutter.svg"
 
+# Free/abutting end detection: how far past each end plane (as a fraction of
+# Pitch, tried at more than one scale so a single degenerate probe -- landing
+# exactly on a face or a corner edge -- cannot flip the result) to probe for
+# adjacent material. Any disagreement between scales, or an error evaluating
+# isInside, is treated as the SAFE reading (abutting/clamped): gouging into a
+# neighbouring feature is destructive, while a missing overrun merely leaves
+# a plain collar the mating crest can jam against -- unwanted, but not
+# destructive. See _detect_free_ends below.
+END_PROBE_FRACTIONS = (0.05, 0.01)
+MIN_END_PROBE = 1e-3
+
+
+def _end_is_free(base_shape, anchor, surface_radius, pitch, z_edge, sign):
+    """True if no material sits just past one end of the threaded run.
+
+    `anchor` is the world Placement of the selected circle's centre/axis
+    (AttachedTo.Placement * LocalPlacement -- the same frame api.py's
+    local_frame() inverts to build LocalPlacement in the first place, so
+    this is exactly circle.centre/circle.axis in world space). `z_edge` is
+    the end's axial position relative to that anchor (+-Length/2); `sign`
+    is which direction is "further past the end" (-1 for the low-z end,
+    +1 for the high-z end).
+    """
+    results = []
+    for frac in END_PROBE_FRACTIONS:
+        eps = max(pitch * frac, MIN_END_PROBE)
+        point_local = App.Vector(surface_radius, 0.0, z_edge + sign * eps)
+        world_point = anchor.multVec(point_local)
+        try:
+            # checkFace=True: required, exactly as in selection.detect_mode --
+            # without it a probe that happens to land on a flat end face
+            # reads False/False and gives no signal at all.
+            results.append(base_shape.isInside(world_point, 1e-7, True))
+        except Exception:
+            return False   # cannot evaluate -> SAFE (treat as abutting)
+    if len(set(results)) != 1:
+        return False       # scales disagree -> SAFE (treat as abutting)
+    return not results[0]  # free means NO material just past the end
+
+
+def _detect_free_ends(obj):
+    """Per end of the threaded run: free (open space) or abutting (adjacent
+    material)?  Returns (near_free, far_free) in the CUTTER's own builder
+    frame (the low/high z ends of the [0, height] sweep) -- NOT "physically
+    left/right": Reversed can flip which physical end that is, but this
+    function works from obj.AttachedTo/obj.LocalPlacement, neither of which
+    encodes Reversed, so its result is unaffected by it.
+
+    No base to check against -- an unattached ThreadCutter, which is how
+    most of this module's own unit tests build one -- keeps today's
+    behaviour: both ends free, matching every case before this detection
+    existed.
+    """
+    base = getattr(obj, "AttachedTo", None)
+    if base is None:
+        return True, True
+    try:
+        base_shape = base.Shape
+    except Exception:
+        return True, True
+    if base_shape is None or base_shape.isNull():
+        return True, True
+
+    anchor = base.Placement.multiply(obj.LocalPlacement)
+    surface_radius = obj.SurfaceRadius.Value
+    pitch = obj.Pitch.Value
+    half_length = obj.Length.Value / 2.0
+
+    near_free = _end_is_free(base_shape, anchor, surface_radius, pitch,
+                             -half_length, -1)
+    far_free = _end_is_free(base_shape, anchor, surface_radius, pitch,
+                            half_length, 1)
+    return near_free, far_free
+
 
 class ThreadCutter(object):
     """Proxy for a Part::FeaturePython carrying a helical cutter solid."""
@@ -86,6 +160,25 @@ class ThreadCutter(object):
         if not hasattr(obj, "LocalPlacement"):
             p("App::PropertyPlacement", "LocalPlacement", "Base",
               "Cutter frame in the base part's local coordinates")
+        if not hasattr(obj, "LeadIn"):
+            p("App::PropertyBool", "LeadIn", "LeadIn",
+              "Relieve the first turn at each FREE end with a 45 degree "
+              "chamfer; an end abutting adjacent material never gets one, "
+              "regardless of this setting")
+            obj.LeadIn = True
+        if not hasattr(obj, "NearEndFree"):
+            p("App::PropertyBool", "NearEndFree", "LeadIn",
+              "Read-only. Whether the low-z end of the swept cutter "
+              "(builder frame, not necessarily the physical near end) was "
+              "found free of adjacent material -- and so gets its overrun "
+              "and lead-in chamfer")
+            obj.NearEndFree = True
+            obj.setEditorMode("NearEndFree", 1)   # read-only
+        if not hasattr(obj, "FarEndFree"):
+            p("App::PropertyBool", "FarEndFree", "LeadIn",
+              "Read-only. The same detection for the high-z end")
+            obj.FarEndFree = True
+            obj.setEditorMode("FarEndFree", 1)    # read-only
 
     def onDocumentRestored(self, obj):
         self.add_properties(obj)
@@ -119,10 +212,61 @@ class ThreadCutter(object):
 
         # Overrun a whole pitch at each end: a groove that stops at the face
         # leaves a collar of plain surface for the mating crest to jam on.
-        height = obj.Length.Value + 2.0 * obj.Pitch.Value
+        pitch_v = obj.Pitch.Value
+        length_v = obj.Length.Value
+        height = length_v + 2.0 * pitch_v
         half = height / 2.0
-        shape = cutter.build(points, obj.Pitch.Value, height,
+        shape = cutter.build(points, pitch_v, height,
                              left_handed=obj.LeftHanded)
+
+        # The overrun above is only correct at a FREE end. Where the
+        # threaded run instead butts against adjacent material (a shoulder,
+        # a hex head, a blind bore's floor), that same overrun gouges
+        # straight into it -- measured 48.5915 mm3 cut out of a hex head on
+        # the fixture that first surfaced this. Decide per end via the same
+        # isInside-probe technique selection.py uses for internal/external
+        # detection, just applied axially past each end instead of radially
+        # across the surface, then clamp the sweep to the feature's own
+        # plane on any end found abutting (and never chamfer that end --
+        # a chamfer into a shoulder is useless: nothing can start a nut from
+        # that end, and it only wastes engagement).
+        near_free, far_free = _detect_free_ends(obj)
+        obj.NearEndFree = near_free
+        obj.FarEndFree = far_free
+
+        feature_lo, feature_hi = pitch_v, pitch_v + length_v
+        z_keep_lo = 0.0 if near_free else feature_lo
+        z_keep_hi = height if far_free else feature_hi
+        if z_keep_lo > 0.0 or z_keep_hi < height:
+            radius_reach = max(pt[0] for pt in points)
+            shape = cutter.clip_to_axial_range(shape, z_keep_lo, z_keep_hi,
+                                               radius_reach)
+
+        # Lead-in relief: a thread cut straight to a FREE face leaves a
+        # sharp, fragile, hard-to-start first turn. At each FREE end (only),
+        # fuse in a 45 degree cone -- fixed, independent of the thread's own
+        # included angle -- wide at the feature's own end plane and tapering
+        # back to the plain surface radius moving into the material. The
+        # cone sits entirely within [feature_lo, feature_hi], never in the
+        # overrun band, so it does not interact with the clamp above.
+        if obj.LeadIn and (near_free or far_free):
+            tip_radius = points[0][0]
+            internal = obj.Mode == form.INTERNAL
+            cones = []
+            if near_free:
+                cones.append(cutter.lead_in_cone(
+                    internal, tip_radius, obj.SurfaceRadius.Value, feature_lo,
+                    into_material=True))
+            if far_free:
+                cones.append(cutter.lead_in_cone(
+                    internal, tip_radius, obj.SurfaceRadius.Value, feature_hi,
+                    into_material=False))
+            for cone in cones:
+                shape = shape.fuse(cone)
+            if not shape.isValid() or len(shape.Solids) != 1:
+                raise cutter.CutterError(
+                    "lead-in chamfer fuse produced an invalid or "
+                    "multi-solid cutter")
 
         # Do NOT transform the shape itself.  Shape.translate()/.rotate() only
         # set the shape's Location; assigning obj.Shape re-syncs that Location
