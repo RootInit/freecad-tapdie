@@ -160,8 +160,22 @@ Claude-Session: https://claude.ai/code/session_01PDVXgCpKDvQEPBNQCK7Bjw"
 - Produces:
   - Constants `INTERNAL = "Internal"`, `EXTERNAL = "External"`, `PRINTED = "Printed 90"`, `ISO = "ISO metric 60"`, `CUSTOM = "Custom"`
   - `depth(form, pitch, angle, mode) -> float`
-  - `cutter_points(mode, form, diameter, pitch, angle, land, clearance, surface_radius, overrun) -> list[(radius, axial)]` — six tuples
+  - `cutter_points(mode, form, diameter, pitch, angle, root_land, crest_land, clearance, surface_radius, overrun) -> list[(radius, axial)]` — six tuples
   - `ProfileError(Exception)`
+
+**Two lands, not one.** `root_land` is the flat at the cutter's tip — the
+thread's **root**. `crest_land` is the flat left at the surface — the thread's
+**crest**. They are separate because ISO truncates asymmetrically (H/8 at one
+end, H/4 at the other) and no single value satisfies both:
+
+```
+ISO M8 x 1.25   root_land  = P/8 = 0.15625
+                crest_land = P/4 = 0.31250
+Printed 90      root_land  = crest_land = Land   (0.08 by default)
+```
+
+The names hold in both modes: "root" is always the deepest point of the cut and
+"crest" always the surface between grooves, for a tap and for a die alike.
 
 **Geometry contract.** All radii are measured from the axis; `axial` is the
 offset along the axis from the profile centre. `tan = tan(angle/2)`,
@@ -171,12 +185,13 @@ offset along the axis from the profile centre. `tan = tan(angle/2)`,
 ```
 INTERNAL (cut outward from a bore)      EXTERNAL (cut inward from an OD)
   apex   = D/2 + c*sec                    apex   = D/2 - depth - c*sec
-  tip    = apex - (land/2)/tan            tip    = apex + (land/2)/tan
+  tip    = apex - (root_land/2)/tan       tip    = apex + (root_land/2)/tan
   should = apex - hw/tan                  should = apex + hw/tan
   far    = min(should, r_surf) - overrun  far    = max(should, r_surf) + overrun
   requires should >= r_surface            requires should <= r_surface
 ```
-with `hw = (pitch - land) / 2` in both cases.
+with `hw = (pitch - crest_land) / 2` in both cases, so the flat left at the
+surface is exactly `crest_land`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -215,16 +230,16 @@ class TestCutterPoints(unittest.TestCase):
     """Reproduces the printed_threads nut cutter, which is measured and known."""
 
     KW = dict(mode=form.INTERNAL, form_name=form.PRINTED, diameter=20.0,
-              pitch=3.8, angle=90.0, land=0.08, clearance=0.12,
-              surface_radius=8.2597, overrun=1.0)
+              pitch=3.8, angle=90.0, root_land=0.08, crest_land=0.08,
+              clearance=0.12, surface_radius=8.2597, overrun=1.0)
 
     def points(self, **over):
         kw = dict(self.KW)
         kw.update(over)
         return form.cutter_points(
             kw["mode"], kw["form_name"], kw["diameter"], kw["pitch"],
-            kw["angle"], kw["land"], kw["clearance"], kw["surface_radius"],
-            kw["overrun"])
+            kw["angle"], kw["root_land"], kw["crest_land"], kw["clearance"],
+            kw["surface_radius"], kw["overrun"])
 
     def test_returns_six_corners(self):
         self.assertEqual(len(self.points()), 6)
@@ -233,13 +248,21 @@ class TestCutterPoints(unittest.TestCase):
         # printed_threads measures the nut root land at r = 10.1297.
         self.assertAlmostEqual(self.points()[0][0], 10.1297, places=3)
 
-    def test_tip_land_is_the_requested_width(self):
+    def test_root_land_is_the_requested_width(self):
         pts = self.points()
         self.assertAlmostEqual(pts[0][1] - pts[5][1], 0.08, places=6)
 
-    def test_parallel_section_is_pitch_minus_land(self):
+    def test_parallel_section_is_pitch_minus_crest_land(self):
         pts = self.points()
         self.assertAlmostEqual(pts[2][1] - pts[3][1], 3.8 - 0.08, places=6)
+
+    def test_lands_are_independent(self):
+        """ISO needs P/8 at the root and P/4 at the crest simultaneously."""
+        pts = self.points(pitch=1.25, root_land=0.15625, crest_land=0.3125,
+                          angle=60.0, form_name=form.ISO, diameter=8.0,
+                          surface_radius=3.3234)
+        self.assertAlmostEqual(pts[0][1] - pts[5][1], 0.15625, places=6)
+        self.assertAlmostEqual(pts[2][1] - pts[3][1], 1.25 - 0.3125, places=6)
 
     def test_flank_is_at_the_half_angle(self):
         pts = self.points()
@@ -254,13 +277,18 @@ class TestCutterPoints(unittest.TestCase):
         self.assertLess(pts[0][0], pts[1][0])   # tip inside shoulder
         self.assertLess(pts[1][0], pts[2][0])   # shoulder inside far end
 
-    def test_land_wider_than_half_pitch_is_rejected(self):
+    def test_lands_summing_past_the_pitch_are_rejected(self):
+        # The tip must stay inside the shoulder: root_land + crest_land < P.
         with self.assertRaises(form.ProfileError):
-            self.points(land=2.0)
+            self.points(root_land=2.0, crest_land=2.0)
 
-    def test_zero_land_is_rejected(self):
+    def test_zero_root_land_is_rejected(self):
         with self.assertRaises(form.ProfileError):
-            self.points(land=0.0)
+            self.points(root_land=0.0)
+
+    def test_zero_crest_land_is_rejected(self):
+        with self.assertRaises(form.ProfileError):
+            self.points(crest_land=0.0)
 
     def test_shoulder_short_of_the_bore_is_rejected(self):
         # A bore far larger than the thread leaves the cutter unable to reach.
@@ -330,29 +358,35 @@ def depth(form_name, pitch, angle, mode):
     return pitch / (2.0 * _tan(angle))
 
 
-def cutter_points(mode, form_name, diameter, pitch, angle, land, clearance,
-                  surface_radius, overrun):
+def cutter_points(mode, form_name, diameter, pitch, angle, root_land,
+                  crest_land, clearance, surface_radius, overrun):
     """Six corners of the swept cutter as (radius, axial_offset) tuples.
 
     Ordered tip -> shoulder -> far -> far -> shoulder -> tip, which is a simple
     closed polygon in both modes.
+
+    `root_land` is the flat at the tip (the thread's root); `crest_land` is the
+    flat left at the surface (the thread's crest).  They are separate because
+    ISO truncates asymmetrically -- H/8 at one end, H/4 at the other -- and no
+    single value satisfies both.
     """
-    if land <= 0.0:
-        raise ProfileError(
-            "land is %.4f; a mathematically sharp crest is the tangency case "
-            "where consecutive turns of the sweep touch" % land)
-    if land >= pitch / 2.0:
-        raise ProfileError(
-            "land %.4f must stay under half the pitch (%.4f)"
-            % (land, pitch / 2.0))
     if pitch <= 0.0:
         raise ProfileError("pitch must be positive")
+    for name, value in (("root_land", root_land), ("crest_land", crest_land)):
+        if value <= 0.0:
+            raise ProfileError(
+                "%s is %.4f; a mathematically sharp edge is the tangency case "
+                "where consecutive turns of the sweep touch" % (name, value))
+    if root_land + crest_land >= pitch:
+        raise ProfileError(
+            "root_land %.4f plus crest_land %.4f leaves no flank within the "
+            "%.4f pitch" % (root_land, crest_land, pitch))
     if not 10.0 < angle < 170.0:
         raise ProfileError("included angle %.1f is out of range" % angle)
 
     tan, sec = _tan(angle), _sec(angle)
-    hw = (pitch - land) / 2.0
-    tip_run = (land / 2.0) / tan
+    hw = (pitch - crest_land) / 2.0
+    tip_run = (root_land / 2.0) / tan
     flank_run = hw / tan
     d = depth(form_name, pitch, angle, mode)
 
@@ -379,14 +413,14 @@ def cutter_points(mode, form_name, diameter, pitch, angle, land, clearance,
         if tip <= 0.0:
             raise ProfileError("thread is deeper than the shaft radius")
 
-    half_land = land / 2.0
+    half_root = root_land / 2.0
     return [
-        (tip, half_land),
+        (tip, half_root),
         (shoulder, hw),
         (far, hw),
         (far, -hw),
         (shoulder, -hw),
-        (tip, -half_land),
+        (tip, -half_root),
     ]
 ```
 
@@ -419,7 +453,7 @@ Claude-Session: https://claude.ai/code/session_01PDVXgCpKDvQEPBNQCK7Bjw"
   - `ISO_COARSE` — tuple of `(nominal_diameter, pitch)` pairs
   - `nearest_for_bore(bore_diameter) -> (diameter, pitch)`
   - `nearest_for_shaft(shaft_diameter) -> (diameter, pitch)`
-  - `form_defaults(form_name) -> dict` with keys `angle`, `land_fraction`
+  - `form_defaults(form_name) -> dict` with keys `angle`, `root_fraction`, `crest_fraction`
 
 **The critical rule.** Picking the ISO entry whose *nominal* diameter is nearest
 the detected bore is wrong on **every** size from M3 to M24 — a 6.8 mm hole is
@@ -481,6 +515,17 @@ class TestFormDefaults(unittest.TestCase):
     def test_iso_is_sixty_degrees(self):
         self.assertAlmostEqual(presets.form_defaults("ISO metric 60")["angle"],
                                60.0, places=6)
+
+    def test_printed_lands_are_symmetric(self):
+        d = presets.form_defaults("Printed 90")
+        self.assertAlmostEqual(d["root_fraction"], d["crest_fraction"],
+                               places=6)
+
+    def test_iso_lands_are_the_standard_asymmetric_truncations(self):
+        # H/8 truncation -> P/8 flat at the root; H/4 -> P/4 at the crest.
+        d = presets.form_defaults("ISO metric 60")
+        self.assertAlmostEqual(d["root_fraction"], 1.0 / 8.0, places=6)
+        self.assertAlmostEqual(d["crest_fraction"], 1.0 / 4.0, places=6)
 
 
 if __name__ == "__main__":
@@ -544,15 +589,18 @@ def nearest_for_shaft(shaft_diameter):
 
 
 def form_defaults(form_name):
-    """Angle and land fraction a preset imposes.
+    """Angle and the two land fractions a preset imposes.
 
-    `land_fraction` multiplies the pitch.  0.021 reproduces the 0.08 mm land at
-    a 3.8 mm pitch that printed_threads measures and prints successfully; ISO
-    uses its standard H/8 crest truncation.
+    Fractions multiply the pitch.  ISO's basic profile truncates the
+    fundamental triangle by H/8 at one end and H/4 at the other, which works
+    out to flats of P/8 at the root and P/4 at the crest -- asymmetric, so the
+    two fractions genuinely differ.  The printed form uses one near-sharp land
+    at both ends: 0.021 reproduces the 0.08 mm land at a 3.8 mm pitch that
+    printed_threads measures and prints successfully.
     """
     if form_name == form.ISO:
-        return {"angle": 60.0, "land_fraction": 0.125}
-    return {"angle": 90.0, "land_fraction": 0.021}
+        return {"angle": 60.0, "root_fraction": 0.125, "crest_fraction": 0.25}
+    return {"angle": 90.0, "root_fraction": 0.021, "crest_fraction": 0.021}
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -607,10 +655,11 @@ from tapdie import cutter, form, measure
 
 
 def build(mode=form.INTERNAL, form_name=form.PRINTED, diameter=20.0,
-          pitch=3.8, angle=90.0, land=0.08, clearance=0.12,
-          surface_radius=8.2597, height=15.2):
-    pts = form.cutter_points(mode, form_name, diameter, pitch, angle, land,
-                             clearance, surface_radius, 1.0)
+          pitch=3.8, angle=90.0, root_land=0.08, crest_land=0.08,
+          clearance=0.12, surface_radius=8.2597, height=15.2):
+    pts = form.cutter_points(mode, form_name, diameter, pitch, angle,
+                             root_land, crest_land, clearance, surface_radius,
+                             1.0)
     return cutter.build(pts, pitch, height)
 
 
@@ -646,8 +695,9 @@ class TestCutterSolid(unittest.TestCase):
             self.assertAlmostEqual(w, 0.08, places=3)
 
     def test_sixty_degree_form_gives_thirty_degree_flanks(self):
-        sh = build(form_name=form.ISO, angle=60.0, pitch=1.25, land=0.15,
-                   diameter=8.0, surface_radius=3.4, height=8.0)
+        sh = build(form_name=form.ISO, angle=60.0, pitch=1.25,
+                   root_land=0.15625, crest_land=0.3125, diameter=8.0,
+                   surface_radius=3.3234, height=8.0)
         prof = measure.profile(sh, 2.0, 6.0)
         self.assertTrue(prof["flank_angles"])
         for a in prof["flank_angles"]:
@@ -655,7 +705,8 @@ class TestCutterSolid(unittest.TestCase):
 
     def test_shallow_lead_angle_survives(self):
         # Fine pitch on a large diameter -- the case that broke MakePipeShell.
-        sh = build(pitch=1.0, land=0.05, surface_radius=9.3, height=15.0)
+        sh = build(pitch=1.0, root_land=0.05, crest_land=0.05,
+                   surface_radius=9.3, height=15.0)
         self.assertTrue(sh.isValid())
         self.assertEqual(len(sh.Solids), 1)
         prof = measure.profile(sh, 3.0, 12.0)
@@ -1120,12 +1171,14 @@ Claude-Session: https://claude.ai/code/session_01PDVXgCpKDvQEPBNQCK7Bjw"
   - `ThreadCutter` proxy class
   - `make_cutter(doc, name="ThreadCutter") -> App.DocumentObject`
   - Property names, exactly: `Mode`, `ThreadForm`, `Diameter`, `Pitch`, `Angle`,
-    `Land`, `Clearance`, `Length`, `SurfaceRadius`, `Overrun`, `LeftHanded`,
+    `RootLand`, `CrestLand`, `Clearance`, `Length`, `SurfaceRadius`,
+    `Overrun`, `LeftHanded`,
     `Reversed`, `AttachedTo`, `LocalPlacement`
 
-**Naming note.** The spec calls the crest/root flat `Truncation`; this plan uses
-`Land` throughout, matching the vocabulary the sibling project measures in. The
-two mean the same thing — do not introduce both.
+**Naming note.** The spec calls the flat `Truncation`; this plan uses `Land`,
+matching the vocabulary the sibling project measures in — and splits it into
+`RootLand` and `CrestLand`, because ISO truncates asymmetrically and one value
+cannot be both P/8 and P/4. Do not reintroduce a single `Truncation`/`Land`.
 
 **Following the base part.** `AttachedTo` (a link) and `LocalPlacement` are how
 the cutter stays with the part. Composing `AttachedTo.Placement` with
@@ -1159,7 +1212,8 @@ class TestThreadCutterFeature(unittest.TestCase):
         obj.Mode = props.pop("Mode", form.INTERNAL)
         obj.Diameter = props.pop("Diameter", 20.0)
         obj.Pitch = props.pop("Pitch", 3.8)
-        obj.Land = props.pop("Land", 0.08)
+        obj.RootLand = props.pop("RootLand", 0.08)
+        obj.CrestLand = props.pop("CrestLand", 0.08)
         obj.Clearance = props.pop("Clearance", 0.12)
         obj.SurfaceRadius = props.pop("SurfaceRadius", 8.2597)
         obj.Length = props.pop("Length", 15.2)
@@ -1177,29 +1231,32 @@ class TestThreadCutterFeature(unittest.TestCase):
         obj = self._cutter()
         before = obj.Shape.Volume
         obj.Pitch = 2.0
-        obj.Land = 0.05
+        obj.RootLand = 0.05
+        obj.CrestLand = 0.05
         self.doc.recompute()
         self.assertNotAlmostEqual(obj.Shape.Volume, before, places=3)
 
     def test_impossible_parameters_leave_the_feature_in_error(self):
         obj = self._cutter()
-        obj.Land = 5.0            # wider than half the pitch
+        obj.CrestLand = 5.0       # leaves no flank within the pitch
         self.doc.recompute()
         self.assertTrue("Invalid" in obj.State or "Touched" in obj.State,
                         "expected an error state, got %s" % obj.State)
 
     def test_reversed_runs_the_thread_the_other_way(self):
         obj = self._cutter()
-        forward = obj.Shape.optimalBoundingBox()
+        forward_box = obj.Shape.optimalBoundingBox()
+        forward_volume = obj.Shape.Volume
         obj.Reversed = True
         self.doc.recompute()
-        back = obj.Shape.optimalBoundingBox()
-        self.assertAlmostEqual(obj.Shape.Volume, obj.Shape.Volume, places=6)
-        self.assertLess(back.ZMax, forward.ZMax - 1.0)
+        back_box = obj.Shape.optimalBoundingBox()
+        # A proper rotation moves the solid without resizing it.
+        self.assertAlmostEqual(obj.Shape.Volume, forward_volume, places=6)
+        self.assertLess(back_box.ZMax, forward_box.ZMax - 1.0)
 
     def test_preset_locks_the_angle(self):
         obj = self._cutter(ThreadForm=form.ISO, Pitch=1.25, Diameter=8.0,
-                           SurfaceRadius=3.4, Land=0.15, Length=8.0)
+                           SurfaceRadius=3.3234, Length=8.0)
         self.assertAlmostEqual(obj.Angle.Value, 60.0, places=6)
         self.assertTrue(obj.getEditorMode("Angle"))
 
@@ -1267,10 +1324,14 @@ class ThreadCutter(object):
             p("App::PropertyAngle", "Angle", "Thread",
               "Included angle; overhang when printed upright is 90 - angle/2")
             obj.Angle = 90.0
-        if not hasattr(obj, "Land"):
-            p("App::PropertyLength", "Land", "Thread",
-              "Flat left at every crest and root")
-            obj.Land = 0.08
+        if not hasattr(obj, "RootLand"):
+            p("App::PropertyLength", "RootLand", "Thread",
+              "Flat at the bottom of the groove (the thread's root)")
+            obj.RootLand = 0.08
+        if not hasattr(obj, "CrestLand"):
+            p("App::PropertyLength", "CrestLand", "Thread",
+              "Flat left on the surface between grooves (the crest)")
+            obj.CrestLand = 0.08
         if not hasattr(obj, "Clearance"):
             p("App::PropertyLength", "Clearance", "Fit",
               "Gap normal to the flanks")
@@ -1310,9 +1371,11 @@ class ThreadCutter(object):
         if obj.ThreadForm != form.CUSTOM:
             defaults = presets.form_defaults(obj.ThreadForm)
             obj.Angle = defaults["angle"]
-            obj.Land = defaults["land_fraction"] * obj.Pitch.Value
+            obj.RootLand = defaults["root_fraction"] * obj.Pitch.Value
+            obj.CrestLand = defaults["crest_fraction"] * obj.Pitch.Value
         obj.setEditorMode("Angle", locked)
-        obj.setEditorMode("Land", locked)
+        obj.setEditorMode("RootLand", locked)
+        obj.setEditorMode("CrestLand", locked)
 
     def onChanged(self, obj, prop):
         if prop in ("ThreadForm", "Pitch") and hasattr(obj, "Angle"):
@@ -1321,7 +1384,8 @@ class ThreadCutter(object):
     def execute(self, obj):
         points = form.cutter_points(
             obj.Mode, obj.ThreadForm, obj.Diameter.Value, obj.Pitch.Value,
-            obj.Angle.Value, obj.Land.Value, obj.Clearance.Value,
+            obj.Angle.Value, obj.RootLand.Value, obj.CrestLand.Value,
+            obj.Clearance.Value,
             obj.SurfaceRadius.Value, obj.Overrun.Value)
 
         # Overrun a whole pitch at each end: a groove that stops at the face
@@ -1502,7 +1566,7 @@ class TestCreateThread(unittest.TestCase):
         before = len(self.doc.Objects)
         with self.assertRaises(Exception):
             api.create_thread(self.doc, base, self._bore_face(base, 3.4),
-                              {"Land": 99.0})
+                              {"CrestLand": 99.0})
         self.doc.recompute()
         self.assertEqual(len(self.doc.Objects), before,
                          "failed creation left objects behind")
@@ -1590,7 +1654,7 @@ def create_thread(doc, base, sub_name, overrides=None):
 
         if not cutter_obj.Shape.isValid() or not cutter_obj.Shape.Solids:
             raise ThreadError(
-                "cutter did not build; check Diameter, Pitch and Land")
+                "cutter did not build; check Diameter, Pitch and the lands")
 
         cut = doc.addObject("Part::Cut", "Thread")
         created.append(cut)
