@@ -116,6 +116,7 @@ class ThreadCutter(object):
         # Overrun a whole pitch at each end: a groove that stops at the face
         # leaves a collar of plain surface for the mating crest to jam on.
         height = obj.Length.Value + 2.0 * obj.Pitch.Value
+        half = height / 2.0
         shape = cutter.build(points, obj.Pitch.Value, height,
                              left_handed=obj.LeftHanded)
 
@@ -131,15 +132,28 @@ class ThreadCutter(object):
         # true extent). Folding the same offset into Placement instead keeps
         # the shape's own geometry -- and its exact Part::GeomPlane end caps
         # -- untouched.
+        # Centre the sweep on LocalPlacement/AttachedTo rather than shifting
+        # it by a single pitch.  The anchor api.py binds here is the
+        # SELECTED FACE'S MIDPOINT (selection.py computes it that way on
+        # purpose -- see Task 5), not one end of it, so a one-pitch offset
+        # left the sweep starting at the anchor and running the full Length
+        # from there: half the bore got no thread at all, and the far half
+        # of the cutter sailed past the part's other face doing nothing.
+        # Shifting by half the total swept height instead centres the run
+        # on the anchor, so it reaches both ends symmetrically.  This is
+        # also what keeps Reversed from walking the cutter off the part:
+        # the 180-about-X rotation flips the sweep direction but must still
+        # land on the same centred span, or a reversed cutter bound to a
+        # real part would miss it entirely.
         if obj.Reversed:
             # 180 about X is a PROPER rotation, so the helix keeps its
             # handedness while running the other way along the axis.
-            # Rotating the translation carries -pitch through to +pitch,
+            # Rotating the translation carries -half through to +half,
             # which is why the sign flips relative to the forward case.
-            offset = App.Placement(App.Vector(0, 0, obj.Pitch.Value),
+            offset = App.Placement(App.Vector(0, 0, half),
                                    App.Rotation(App.Vector(1, 0, 0), 180.0))
         else:
-            offset = App.Placement(App.Vector(0, 0, -obj.Pitch.Value),
+            offset = App.Placement(App.Vector(0, 0, -half),
                                    App.Rotation())
 
         obj.Shape = shape        # untransformed
