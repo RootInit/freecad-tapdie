@@ -30,12 +30,15 @@ case "${1:-all}" in
     # Piping into grep would hand back grep's exit status, not freecadcmd's,
     # and this is /bin/sh with no pipefail.  Capture output, keep the status.
     out="$ROOT/.fc-test-output"
+    # flatpak run does not forward signals into the sandbox, so freecadcmd
+    # processes may outlive the script on interrupt.  At least clean up our
+    # output file.
+    trap 'rm -f "$out"' EXIT INT TERM
     set +e
     $FC "$ROOT/tests/run_fc.py" > "$out" 2>&1
     status=$?
     set -e
     grep -vE "$NOISE" "$out" || true
-    rm -f "$out"
     exit "$status"
     ;;
   all)

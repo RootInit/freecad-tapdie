@@ -23,12 +23,12 @@ for name in MODULES:
     except (ImportError, AttributeError, ValueError):
         spec = None
     if spec is None:
-        print("  (skipping %s -- not written yet)" % name)
+        print("  (skipping %s -- not written yet)" % name, flush=True)
         continue
     suite.addTests(loader.loadTestsFromName(name))
 
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 print("FC TESTS: %d run, %d failures, %d errors"
-      % (result.testsRun, len(result.failures), len(result.errors)))
+      % (result.testsRun, len(result.failures), len(result.errors)), flush=True)
 if not result.wasSuccessful():
     raise SystemExit(1)
