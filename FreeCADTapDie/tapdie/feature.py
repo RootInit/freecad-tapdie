@@ -94,10 +94,14 @@ class ThreadCutter(object):
         """Presets drive angle and land; Custom hands them back to the user."""
         locked = 1 if obj.ThreadForm != form.CUSTOM else 0
         if obj.ThreadForm != form.CUSTOM:
-            defaults = presets.form_defaults(obj.ThreadForm)
+            # form_defaults needs Pitch now: the printed form's land is
+            # floored at one extrusion width, an ABSOLUTE width, not a pure
+            # fraction of pitch (see presets.py for why a pure fraction
+            # collapses to a knife edge at a fine pitch).
+            defaults = presets.form_defaults(obj.ThreadForm, obj.Pitch.Value)
             obj.Angle = defaults["angle"]
-            obj.RootLand = defaults["root_fraction"] * obj.Pitch.Value
-            obj.CrestLand = defaults["crest_fraction"] * obj.Pitch.Value
+            obj.RootLand = defaults["root_land"]
+            obj.CrestLand = defaults["crest_land"]
         obj.setEditorMode("Angle", locked)
         obj.setEditorMode("RootLand", locked)
         obj.setEditorMode("CrestLand", locked)
