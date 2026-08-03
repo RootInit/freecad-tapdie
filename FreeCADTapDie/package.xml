@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
+  <name>TapDie</name>
+  <description>Thread any cylinder by selecting a circular profile.</description>
+  <version>0.1.0</version>
+  <date>2026-08-02</date>
+  <maintainer email="root@init.cx">Alexander</maintainer>
+  <license>LGPL-2.1-or-later</license>
+  <content>
+    <workbench>
+      <classname>TapDie</classname>
+      <subdirectory>./</subdirectory>
+      <icon>resources/icons/tapdie_cutter.svg</icon>
+    </workbench>
+  </content>
+</package>
