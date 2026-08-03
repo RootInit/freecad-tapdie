@@ -96,5 +96,97 @@ class TestCutterPoints(unittest.TestCase):
             self.points(surface_radius=15.0)
 
 
+class TestCriticalValidation(unittest.TestCase):
+    """Test input validation for critical error modes."""
+
+    KW = dict(mode=form.INTERNAL, form_name=form.PRINTED, diameter=20.0,
+              pitch=3.8, angle=90.0, root_land=0.08, crest_land=0.08,
+              clearance=0.12, surface_radius=8.2597, overrun=1.0)
+
+    def points(self, **over):
+        kw = dict(self.KW)
+        kw.update(over)
+        return form.cutter_points(
+            kw["mode"], kw["form_name"], kw["diameter"], kw["pitch"],
+            kw["angle"], kw["root_land"], kw["crest_land"], kw["clearance"],
+            kw["surface_radius"], kw["overrun"])
+
+    def test_overrun_zero_is_rejected_internal(self):
+        """Overrun must be positive to reach past the surface."""
+        with self.assertRaises(form.ProfileError):
+            self.points(overrun=0.0)
+
+    def test_overrun_negative_is_rejected_internal(self):
+        """Negative overrun would fold the profile inward."""
+        with self.assertRaises(form.ProfileError):
+            self.points(overrun=-1.0)
+
+    def test_overrun_zero_is_rejected_external(self):
+        """Overrun must be positive in external mode too."""
+        with self.assertRaises(form.ProfileError):
+            self.points(mode=form.EXTERNAL, surface_radius=10.0, overrun=0.0)
+
+    def test_overrun_negative_is_rejected_external(self):
+        """Negative overrun collapses the external profile."""
+        with self.assertRaises(form.ProfileError):
+            self.points(mode=form.EXTERNAL, surface_radius=10.0, overrun=-1.0)
+
+    def test_overrun_larger_than_shoulder_is_rejected_internal(self):
+        """An overrun larger than shoulder radius folds far through the axis."""
+        # With default params, shoulder ≈ 8.31, surface_radius = 8.2597.
+        # far = min(shoulder, surface_radius) - overrun = 8.2597 - overrun
+        # overrun = 10 makes far = -1.74, which should be rejected.
+        with self.assertRaises(form.ProfileError):
+            self.points(overrun=10.0)
+
+    def test_external_shoulder_overshoots_surface_is_rejected(self):
+        """EXTERNAL where shoulder is larger than surface radius."""
+        # With a small surface_radius, the shoulder will overshoot.
+        with self.assertRaises(form.ProfileError):
+            self.points(mode=form.EXTERNAL, diameter=20.0, pitch=3.8,
+                        surface_radius=8.0)
+
+    def test_external_thread_deeper_than_shaft_is_rejected(self):
+        """EXTERNAL where thread depth exceeds shaft radius."""
+        # A large pitch with small diameter will make tip negative.
+        with self.assertRaises(form.ProfileError):
+            self.points(mode=form.EXTERNAL, diameter=5.0, pitch=10.0,
+                        surface_radius=2.0)
+
+    def test_invalid_mode_is_rejected(self):
+        """Mode must be INTERNAL or EXTERNAL, not a typo."""
+        with self.assertRaises(form.ProfileError):
+            self.points(mode="Bogus")
+
+    def test_invalid_mode_case_sensitivity(self):
+        """Mode matching is case-sensitive."""
+        with self.assertRaises(form.ProfileError):
+            self.points(mode="internal")
+
+    def test_invalid_form_name_is_rejected(self):
+        """Form name must be one of FORMS."""
+        with self.assertRaises(form.ProfileError):
+            self.points(form_name="Bogus")
+
+    def test_invalid_form_name_typo(self):
+        """Typos in form name are caught."""
+        with self.assertRaises(form.ProfileError):
+            self.points(form_name="Printed 90x")
+
+
+class TestDepthValidation(unittest.TestCase):
+    """Test validation in depth() function."""
+
+    def test_depth_invalid_mode(self):
+        """depth() validates mode enum."""
+        with self.assertRaises(form.ProfileError):
+            form.depth(form.PRINTED, 3.8, 90.0, "Bogus")
+
+    def test_depth_invalid_form_name(self):
+        """depth() validates form_name enum."""
+        with self.assertRaises(form.ProfileError):
+            form.depth("Bogus", 3.8, 90.0, form.INTERNAL)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,16 @@ def _sec(angle):
     return 1.0 / math.cos(math.radians(angle / 2.0))
 
 
+def _check_enums(mode, form_name):
+    """Validate mode and form_name enums."""
+    if mode not in (INTERNAL, EXTERNAL):
+        raise ProfileError(
+            "mode %r is not %s or %s" % (mode, INTERNAL, EXTERNAL))
+    if form_name not in FORMS:
+        raise ProfileError(
+            "form %r is not one of %s" % (form_name, ", ".join(FORMS)))
+
+
 def depth(form_name, pitch, angle, mode):
     """Radial depth of the thread.
 
@@ -40,6 +50,7 @@ def depth(form_name, pitch, angle, mode):
     is a fixed fraction of H.  The printed form is a near-sharp V, which spends
     the whole pitch on flanks -- so its depth follows directly from the angle.
     """
+    _check_enums(mode, form_name)
     if form_name == ISO:
         H = pitch * math.sqrt(3.0) / 2.0
         return 5.0 * H / 8.0 if mode == INTERNAL else 17.0 * H / 24.0
@@ -58,6 +69,11 @@ def cutter_points(mode, form_name, diameter, pitch, angle, root_land,
     ISO truncates asymmetrically -- H/8 at one end, H/4 at the other -- and no
     single value satisfies both.
     """
+    _check_enums(mode, form_name)
+    if overrun <= 0.0:
+        raise ProfileError(
+            "overrun %.4f must be positive; the cutter has to reach past the "
+            "surface it is cutting" % overrun)
     if pitch <= 0.0:
         raise ProfileError("pitch must be positive")
     for name, value in (("root_land", root_land), ("crest_land", crest_land)):
