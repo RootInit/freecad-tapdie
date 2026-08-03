@@ -60,6 +60,22 @@ class TestFormDefaults(unittest.TestCase):
         self.assertAlmostEqual(d["root_fraction"], 1.0 / 8.0, places=6)
         self.assertAlmostEqual(d["crest_fraction"], 1.0 / 4.0, places=6)
 
+    def test_unrecognized_form_name_raises_ValueError(self):
+        with self.assertRaises(ValueError) as cm:
+            presets.form_defaults("bogus")
+        self.assertIn("has no preset", str(cm.exception))
+
+    def test_form_custom_raises_ValueError(self):
+        from tapdie import form
+        with self.assertRaises(ValueError) as cm:
+            presets.form_defaults(form.CUSTOM)
+        self.assertIn("has no preset", str(cm.exception))
+
+    def test_none_form_name_raises_ValueError(self):
+        with self.assertRaises(ValueError) as cm:
+            presets.form_defaults(None)
+        self.assertIn("has no preset", str(cm.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

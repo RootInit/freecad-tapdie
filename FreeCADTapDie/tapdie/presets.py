@@ -56,4 +56,8 @@ def form_defaults(form_name):
     """
     if form_name == form.ISO:
         return {"angle": 60.0, "root_fraction": 0.125, "crest_fraction": 0.25}
-    return {"angle": 90.0, "root_fraction": 0.021, "crest_fraction": 0.021}
+    if form_name == form.PRINTED:
+        return {"angle": 90.0, "root_fraction": 0.021, "crest_fraction": 0.021}
+    raise ValueError(
+        "form %r has no preset; expected %s or %s"
+        % (form_name, form.PRINTED, form.ISO))
