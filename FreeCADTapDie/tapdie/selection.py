@@ -27,12 +27,28 @@ def _from_face(face):
     surface = face.Surface
     if not isinstance(surface, Part.Cylinder):
         raise SelectionError("select a cylindrical face or a circular edge")
-    bb = face.optimalBoundingBox()
     axis = App.Vector(surface.Axis)
     axis.normalize()
-    length = abs(bb.ZLength * axis.z) + abs(bb.YLength * axis.y) \
-        + abs(bb.XLength * axis.x)
-    return App.Vector(surface.Center), axis, surface.Radius, length
+
+    # A Part.Cylinder is parametrised (u = angle, v = axial distance), so the
+    # TRIMMED face's v-range is exactly its axial length.  Do not replace this
+    # with a bounding-box formula: summing bb extents times axis components is
+    # only correct when the axis is axis-aligned, and is 34.6% wrong on a
+    # cylinder tilted 30 degrees off X/Y/Z.
+    _u0, _u1, v0, v1 = face.ParameterRange
+    length = abs(v1 - v0)
+
+    # surface.Center is the origin of the UNTRIMMED surface's local frame, not
+    # a point on the trimmed face -- on a counterbore built from coaxial
+    # cylinders sharing an origin, that can be well outside this face's real
+    # z-range.  Project the face's centroid onto the axis instead, anchored
+    # at surface.Center so a face split by a seam (whose raw CenterOfMass is
+    # off-axis) still lands back on the axis.
+    base = App.Vector(surface.Center)
+    com = face.CenterOfMass
+    centre = base + axis * (com - base).dot(axis)
+
+    return centre, axis, surface.Radius, length
 
 
 def _from_edge(edge, solid):
@@ -41,9 +57,31 @@ def _from_edge(edge, solid):
         raise SelectionError("select a cylindrical face or a circular edge")
     axis = App.Vector(curve.Axis)
     axis.normalize()
-    bb = solid.optimalBoundingBox()
-    length = max(bb.XLength, bb.YLength, bb.ZLength)
+
+    # max(bb extents) conflates axial length with radial bulge -- wrong for
+    # any solid that isn't axis-aligned, and arbitrarily wrong for a short fat
+    # one.  Project every vertex onto the axis and take the span instead.
+    proj = [App.Vector(v.Point).dot(axis) for v in solid.Vertexes]
+    length = (max(proj) - min(proj)) if proj else 0.0
+
+    # curve.Center is the true circle centre regardless of trimming -- an
+    # edge's defining circle has no separate "untrimmed surface frame" the
+    # way a face's underlying cylinder does, so this path does not share the
+    # face-centre bug above.
     return App.Vector(curve.Center), axis, curve.Radius, length
+
+
+def _element(shape, sub_name):
+    """getElement() raises several unrelated exception types (IndexError,
+    Part.OCCError, ...) for a stale or out-of-range subelement name -- a
+    realistic case when a selection survives a topology-changing recompute.
+    Funnel them all into SelectionError so callers only need one except."""
+    try:
+        return shape.getElement(sub_name)
+    except Exception:
+        raise SelectionError(
+            "%s is not a subelement of this shape; the selection may be "
+            "stale" % sub_name)
 
 
 def detect_mode(solid, centre, axis, radius):
@@ -87,10 +125,10 @@ def resolve(obj, sub_name):
     """
     shape = obj.Shape
     if sub_name.startswith("Face"):
-        face = shape.getElement(sub_name)
+        face = _element(shape, sub_name)
         centre, axis, radius, length = _from_face(face)
     elif sub_name.startswith("Edge"):
-        edge = shape.getElement(sub_name)
+        edge = _element(shape, sub_name)
         centre, axis, radius, length = _from_edge(edge, shape)
     else:
         raise SelectionError(
