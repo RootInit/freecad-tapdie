@@ -6,7 +6,17 @@ import FreeCAD as App
 import FreeCADGui as Gui
 from PySide import QtGui
 
-from . import api, form, selection
+# Deliberately NOT `from . import api, form, selection` at module scope.
+# That chain pulls in api -> feature -> cutter, which does `import Part` and
+# `import Sketcher` at import time -- and those are not reliably importable
+# while InitGui.py itself is still running at FreeCAD startup. When that
+# import fails partway through, Python leaves the `tapdie` package in
+# sys.modules (so it LOOKS imported) but never finishes running this
+# module's body, so `Gui.addCommand` at the bottom never executes and the
+# command silently never registers -- no traceback, no Report view message,
+# nothing. Importing these three lazily, inside each method that actually
+# needs them, defers that cost past startup, by which point Part/Sketcher
+# are available.
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "resources", "icons")
@@ -16,6 +26,8 @@ class ThreadTaskPanel(object):
     """Minimal parameter dialog: everything else is edited on the object."""
 
     def __init__(self, base, sub_name, circle, defaults):
+        from . import form
+
         self.base, self.sub_name = base, sub_name
         self.circle, self.defaults = circle, defaults
 
@@ -68,6 +80,8 @@ class ThreadTaskPanel(object):
         self._warn()
 
     def _warn(self):
+        from . import form
+
         if self.thread_form.currentText() == form.ISO:
             self.note.setText(
                 "ISO 60 deg gives a 60 deg overhang on every flank. Printed "
@@ -79,6 +93,8 @@ class ThreadTaskPanel(object):
             self.note.setText("")
 
     def accept(self):
+        from . import api, form, selection
+
         overrides = {
             "Mode": self.mode.currentText(),
             "ThreadForm": self.thread_form.currentText(),
@@ -122,6 +138,8 @@ class ThreadCommand(object):
         return App.ActiveDocument is not None and bool(Gui.Selection.getSelectionEx())
 
     def Activated(self):
+        from . import api, selection
+
         picks = Gui.Selection.getSelectionEx()
         if not picks or not picks[0].SubElementNames:
             QtGui.QMessageBox.warning(
