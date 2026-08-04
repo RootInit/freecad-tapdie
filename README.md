@@ -26,7 +26,8 @@ FreeCAD; **Tap / Die...** appears in the Part workbench's menu and toolbar.
 
 ## Use
 
-1. Select one cylindrical face, or one circular edge, on a solid.
+1. Select one cylindrical face, one **flat circular face** (the end of a rod
+   is a much bigger target than the edge around it), or one circular edge.
 2. Run **Part → Tap / Die...**
 3. Internal vs external is detected by probing the material either side of the
    circle; the dialog says so when it could not tell.
@@ -88,8 +89,14 @@ clearance, not the blank.
   ask for an M16 thread on a Ø20 shaft, or an M20 thread in a Ø10 bore, and
   get it. Only one direction is available in each mode, because cutting
   removes material and cannot add it — external can go *smaller* than the
-  shaft, internal *larger* than the bore. Ask for the other and the dialog
-  says so and falls back to the blank rather than silently resizing anything.
+  shaft, internal *larger* than the bore.
+- **Add material if needed** (on by default, advanced) covers the other
+  direction: when the diameter you asked for cannot be cut from the blank, a
+  tube is fused on first — a sleeve around the shaft, or a liner inside the
+  bore — and then the ordinary cutter works on the result. So an M12 thread
+  will happily go on an 8 mm shaft. Nothing is added when cutting alone can
+  reach the size, and the dialog tells you before OK does it. Turn it off and
+  those cases fall back to the blank and say so instead.
 - **Form → Custom** unlocks the included angle and both land widths. On a
   preset they are computed from form, pitch and mode, and shown greyed.
 - **One Ctrl-Z removes the whole thread** — the cutter and the boolean — and

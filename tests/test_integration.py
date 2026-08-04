@@ -1062,12 +1062,24 @@ class TestCreateThread(unittest.TestCase):
                         "the boolean removed nothing")
 
     def test_build_thread_is_still_the_two_together(self):
-        """create_thread's one-shot path must be unchanged by the split."""
+        """create_thread's one-shot path must be unchanged by the split.
+
+        The cut consumes the cutter and the part -- but the part reaches it
+        through a Part::Fuse whenever material had to be added first, which
+        a standard tap drill triggers: an ISO 6.8mm hole is 0.098mm wider
+        than the printed form wants for an exact M8, so AddMaterial lines it
+        rather than letting the thread come out at M8.2.
+        """
         base = self._bored_block()
         face = self._bore_face(base, 3.4)
         cutter_obj, cut = api.build_thread(self.doc, base, face)
         self.assertEqual(cut.Tool.Name, cutter_obj.Name)
-        self.assertEqual(cut.Base.Name, base.Name)
+        consumed = cut.Base
+        if consumed.TypeId == "Part::Fuse":
+            self.assertGreater(feature.fill_needed(cutter_obj), 0.0,
+                               "a fuse appeared with nothing to add")
+            consumed = consumed.Base
+        self.assertEqual(consumed.Name, base.Name)
         self.assertEqual(len(cut.Shape.Solids), 1)
 
     def test_abort_alone_does_not_remove_what_build_thread_created(self):
@@ -1230,6 +1242,181 @@ class TestCreateThread(unittest.TestCase):
                 delta.Angle, 0.0, places=6,
                 msg="direction %s introduced a rotation of its own"
                     % direction)
+
+
+class TestAddMaterialWhenNeeded(unittest.TestCase):
+    """A cutter cannot add material, so a thread larger than its shaft (or
+    smaller than its bore) needs a tube fused on first -- and ONLY then."""
+
+    def setUp(self):
+        self.doc = App.newDocument("filltest", hidden=True)
+
+    def tearDown(self):
+        App.closeDocument(self.doc.Name)
+
+    def _shaft(self, radius=4.0, height=30.0):
+        obj = self.doc.addObject("Part::Cylinder", "Shaft")
+        obj.Radius, obj.Height = radius, height
+        self.doc.recompute()
+        for i, f in enumerate(obj.Shape.Faces):
+            if (hasattr(f.Surface, "Radius")
+                    and abs(f.Surface.Radius - radius) < 1e-6):
+                return obj, "Face%d" % (i + 1)
+        raise AssertionError("no cylindrical face")
+
+    def _bored_block(self, bore=3.0, outer=12.0, height=20.0):
+        block = Part.makeCylinder(outer, height)
+        hole = Part.makeCylinder(bore, height)
+        obj = self.doc.addObject("Part::Feature", "Block")
+        obj.Shape = block.cut(hole)
+        self.doc.recompute()
+        for i, f in enumerate(obj.Shape.Faces):
+            if (hasattr(f.Surface, "Radius")
+                    and abs(f.Surface.Radius - bore) < 1e-6):
+                return obj, "Face%d" % (i + 1)
+        raise AssertionError("no bore face")
+
+    def test_nothing_is_added_when_cutting_can_reach_it(self):
+        """ONLY if needed: the ordinary case must not gain a boolean, an
+        object, or a hidden original."""
+        shaft, sub = self._shaft(radius=4.0)
+        created = []
+        api.build_thread(self.doc, shaft, sub,
+                         {"Diameter": 8.0, "Pitch": 1.25, "Length": 10.0},
+                         created)
+        fuses = [o for o in created if o.TypeId == "Part::Fuse"]
+        self.assertEqual(fuses, [], "a fuse appeared with nothing to add")
+        fills = [o for o in created
+                 if getattr(getattr(o, "Proxy", None), "Type", None)
+                 == "ThreadFiller"]
+        self.assertEqual(fills, [])
+
+    def test_an_external_thread_larger_than_its_shaft_gets_a_sleeve(self):
+        shaft, sub = self._shaft(radius=4.0)      # an 8mm shaft
+        created = []
+        cutter_obj, cut = api.build_thread(
+            self.doc, shaft, sub,
+            {"Diameter": 12.0, "Pitch": 1.75, "Length": 10.0}, created)
+        self.assertGreater(feature.fill_needed(cutter_obj), 0.0)
+        self.assertEqual(
+            len([o for o in created if o.TypeId == "Part::Fuse"]), 1)
+        self.assertTrue(cut.Shape.isValid())
+        self.assertEqual(len(cut.Shape.Solids), 1,
+                         "the sleeve did not merge with the shaft")
+        # and the thread really is bigger than the shaft it was cut on
+        box = cut.Shape.optimalBoundingBox()
+        self.assertGreater(max(box.XLength, box.YLength), 8.0 + 1e-6)
+        self.assertIsNone(api.diameter_note(cutter_obj),
+                          "the requested diameter should now be reachable")
+
+    def test_an_internal_thread_smaller_than_its_bore_gets_a_liner(self):
+        block, sub = self._bored_block(bore=5.0)
+        created = []
+        cutter_obj, cut = api.build_thread(
+            self.doc, block, sub,
+            {"Diameter": 6.0, "Pitch": 1.0, "Length": 10.0}, created)
+        self.assertGreater(feature.fill_needed(cutter_obj), 0.0)
+        self.assertTrue(cut.Shape.isValid())
+        self.assertEqual(len(cut.Shape.Solids), 1)
+        self.assertIsNone(api.diameter_note(cutter_obj))
+
+    def test_the_setting_off_falls_back_to_clamping(self):
+        """With AddMaterial off the old behaviour must return intact --
+        clamp to the blank and report it, never silently resize."""
+        shaft, sub = self._shaft(radius=4.0)
+        created = []
+        cutter_obj, _cut = api.build_thread(
+            self.doc, shaft, sub,
+            {"Diameter": 12.0, "Pitch": 1.75, "Length": 10.0,
+             "AddMaterial": False}, created)
+        self.assertEqual(feature.fill_needed(cutter_obj), 0.0)
+        self.assertEqual([o for o in created if o.TypeId == "Part::Fuse"], [])
+        self.assertIsNotNone(api.diameter_note(cutter_obj))
+
+    def test_the_fill_tube_spans_exactly_the_threaded_run(self):
+        shaft, sub = self._shaft(radius=4.0)
+        created = []
+        cutter_obj, _cut = api.build_thread(
+            self.doc, shaft, sub,
+            {"Diameter": 12.0, "Pitch": 1.75, "Length": 10.0}, created)
+        filler = [o for o in created
+                  if getattr(getattr(o, "Proxy", None), "Type", None)
+                  == "ThreadFiller"][0]
+        fill_box = filler.Shape.optimalBoundingBox()
+        cut_box = cutter_obj.Shape.optimalBoundingBox()
+        self.assertAlmostEqual(fill_box.ZLength, cut_box.ZLength, delta=1e-3,
+                               msg="the tube and the cutter must cover the "
+                                   "same run, or the thread runs off it")
+
+
+class TestSelectingAFlatCircularFace(unittest.TestCase):
+    """A disc at the end of a rod names a circle just as well as the rod's
+    side does, and is a far bigger thing to click than the edge round it."""
+
+    def setUp(self):
+        self.doc = App.newDocument("flatfacetest", hidden=True)
+
+    def tearDown(self):
+        App.closeDocument(self.doc.Name)
+
+    def _rod(self, radius=4.0, height=20.0):
+        obj = self.doc.addObject("Part::Cylinder", "Rod")
+        obj.Radius, obj.Height = radius, height
+        self.doc.recompute()
+        return obj
+
+    def _planar_faces(self, obj):
+        return [(i + 1, f) for i, f in enumerate(obj.Shape.Faces)
+                if isinstance(f.Surface, Part.Plane)]
+
+    def test_a_rod_end_face_resolves_to_its_circle(self):
+        rod = self._rod(radius=4.0, height=20.0)
+        index, _face = self._planar_faces(rod)[0]
+        circle = selection.resolve(rod, "Face%d" % index)
+        self.assertAlmostEqual(circle.radius, 4.0, places=6)
+        self.assertAlmostEqual(abs(circle.axis.z), 1.0, places=6)
+        self.assertEqual(circle.mode, form.EXTERNAL)
+
+    def test_an_end_face_runs_one_way_like_an_edge(self):
+        """It sits at ONE end of the rod, so straddling would put half the
+        cutter in open air -- the same reason an edge does not straddle."""
+        rod = self._rod(radius=4.0, height=20.0)
+        for index, _face in self._planar_faces(rod):
+            circle = selection.resolve(rod, "Face%d" % index)
+            self.assertNotEqual(
+                circle.direction, form.BOTH,
+                "a flat end face must pick a direction, not straddle")
+
+    def test_threading_from_an_end_face_builds(self):
+        rod = self._rod(radius=4.0, height=20.0)
+        index, _face = self._planar_faces(rod)[0]
+        _cutter, cut = api.create_thread(
+            self.doc, rod, "Face%d" % index,
+            {"Diameter": 8.0, "Pitch": 1.25, "Length": 8.0})
+        self.assertTrue(cut.Shape.isValid())
+        self.assertEqual(len(cut.Shape.Solids), 1)
+        self.assertLess(cut.Shape.Volume, rod.Shape.Volume)
+
+    def test_an_annulus_asks_rather_than_guessing(self):
+        """A tube's end face bounds two circles and either could be meant."""
+        outer = Part.makeCylinder(8.0, 20.0)
+        hole = Part.makeCylinder(4.0, 20.0)
+        tube = self.doc.addObject("Part::Feature", "Tube")
+        tube.Shape = outer.cut(hole)
+        self.doc.recompute()
+        annuli = [i + 1 for i, f in enumerate(tube.Shape.Faces)
+                  if isinstance(f.Surface, Part.Plane)]
+        with self.assertRaises(selection.SelectionError) as caught:
+            selection.resolve(tube, "Face%d" % annuli[0])
+        self.assertIn("circular edge", str(caught.exception))
+        self.assertIn("16.00", str(caught.exception))
+
+    def test_a_non_circular_flat_face_is_still_rejected(self):
+        box = self.doc.addObject("Part::Box", "Box")
+        self.doc.recompute()
+        with self.assertRaises(selection.SelectionError) as caught:
+            selection.resolve(box, "Face1")
+        self.assertIn("no circular edge", str(caught.exception))
 
 
 class TestPrintTestPiece(unittest.TestCase):

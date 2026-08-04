@@ -23,10 +23,62 @@ class AmbiguousMode(SelectionError):
     """Internal vs external could not be determined; ask the user."""
 
 
-def _from_face(face):
+def _circular_edges(face):
+    """Distinct circles bounding `face`, largest first.
+
+    Deduplicated on centre and radius: a face split by a seam can present the
+    same circle as two edges, and reporting that as an ambiguity would send
+    the user away for no reason.
+    """
+    seen, circles = set(), []
+    for edge in face.Edges:
+        curve = edge.Curve
+        if not isinstance(curve, Part.Circle):
+            continue
+        key = (round(curve.Center.x, 6), round(curve.Center.y, 6),
+               round(curve.Center.z, 6), round(curve.Radius, 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        circles.append(edge)
+    circles.sort(key=lambda e: e.Curve.Radius, reverse=True)
+    return circles
+
+
+def _from_planar_face(face, solid):
+    """A FLAT circular face -- the end of a rod, the top of a boss.
+
+    Threading is defined by a circle, and the disc at the end of a rod names
+    one just as well as the rod's own side does. It is also a far easier
+    thing to click: an end face is a big target, where the edge around it is
+    a one-pixel line.
+
+    An annulus (the end of a tube) bounds TWO circles and there is no way to
+    tell which one is meant, so that case asks rather than guessing -- the
+    edge is one click away and says so unambiguously.
+    """
+    circles = _circular_edges(face)
+    if not circles:
+        raise SelectionError(
+            "that flat face has no circular edge to thread; select a "
+            "cylindrical face or a circular edge")
+    if len(circles) > 1:
+        raise SelectionError(
+            "that face has %d circular edges (%s mm across) and either could "
+            "be meant; select the circular edge you want instead"
+            % (len(circles),
+               ", ".join("%.2f" % (2.0 * e.Curve.Radius) for e in circles)))
+    return _from_edge(circles[0], solid)
+
+
+def _from_face(face, solid):
     surface = face.Surface
+    if isinstance(surface, Part.Plane):
+        return _from_planar_face(face, solid)
     if not isinstance(surface, Part.Cylinder):
-        raise SelectionError("select a cylindrical face or a circular edge")
+        raise SelectionError(
+            "select a cylindrical face, a flat circular face, or a circular "
+            "edge")
     axis = App.Vector(surface.Axis)
     axis.normalize()
 
@@ -166,18 +218,20 @@ def resolve(obj, sub_name):
     shape = obj.Shape
     if sub_name.startswith("Face"):
         face = _element(shape, sub_name)
-        centre, axis, radius, length = _from_face(face)
+        centre, axis, radius, length = _from_face(face, shape)
         # A cylindrical face IS the run: its own midpoint is the anchor and
         # its own length the extent, so straddling is exactly right and no
-        # probe is needed.
-        from_edge = False
+        # probe is needed. A FLAT circular face is not -- it sits at one end
+        # of the feature exactly as an edge does, and is handled as one.
+        from_edge = isinstance(face.Surface, Part.Plane)
     elif sub_name.startswith("Edge"):
         edge = _element(shape, sub_name)
         centre, axis, radius, length = _from_edge(edge, shape)
         from_edge = True
     else:
         raise SelectionError(
-            "select a cylindrical face or a circular edge, not %s" % sub_name)
+            "select a cylindrical face, a flat circular face, or a circular "
+            "edge, not %s" % sub_name)
 
     if radius <= 0.0:
         raise SelectionError("selected circle has no radius")

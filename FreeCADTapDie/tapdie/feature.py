@@ -28,6 +28,41 @@ def feature_span(obj):
     return form.span(obj.Direction, obj.Length.Value)
 
 
+def keep_range(obj):
+    """(z_lo, z_hi, height) the cutter really occupies, in builder frame.
+
+    Reads NearEndFree/FarEndFree rather than re-probing: the cutter's own
+    execute() has already written them, and ThreadFiller needs the identical
+    range so its tube lines up with the thread exactly.
+    """
+    pitch = obj.Pitch.Value
+    length = obj.Length.Value
+    height = length + 2.0 * pitch
+    feature_lo, feature_hi = pitch, pitch + length
+    flush = obj.FlushEnds
+    lo = feature_lo if (flush or not obj.NearEndFree) else 0.0
+    hi = feature_hi if (flush or not obj.FarEndFree) else height
+    return lo, hi, height
+
+
+def fill_needed(obj):
+    """Radial thickness of material this thread needs fused on first.
+
+    Zero without a base to fuse to. An unattached cutter -- which is how most
+    of this module's own tests build one -- has nothing to add material TO,
+    so anchoring its profile where a sleeve would put it would place the
+    thread in mid-air and silently mis-cut anything that later used it.
+    """
+    if not getattr(obj, "AddMaterial", False):
+        return 0.0
+    if getattr(obj, "AttachedTo", None) is None:
+        return 0.0
+    return form.fill_thickness(
+        obj.Mode, obj.Diameter.Value, obj.Pitch.Value, obj.Angle.Value,
+        obj.RootLand.Value, obj.CrestLand.Value, obj.Clearance.Value,
+        obj.SurfaceRadius.Value, obj.FlatClearance.Value)
+
+
 def _end_is_free(base_shape, anchor, surface_radius, pitch, z_edge, sign):
     """True if no material sits just past one end of the threaded run.
 
@@ -187,6 +222,14 @@ class ThreadCutter(object):
               "is your adjustment on top of that, and means the same thing "
               "in both modes")
             obj.StartAngle = 0.0
+        if not hasattr(obj, "AddMaterial"):
+            p("App::PropertyBool", "AddMaterial", "Thread",
+              "Fuse a tube of material on first when -- and only when -- the "
+              "requested Diameter cannot be reached by cutting alone: a "
+              "sleeve to make an external thread LARGER than its shaft, a "
+              "liner to make an internal one SMALLER than its bore. Off, "
+              "those two cases clamp to the blank and are reported instead")
+            obj.AddMaterial = True
         if not hasattr(obj, "LeftHanded"):
             p("App::PropertyBool", "LeftHanded", "Thread", "Left-hand thread")
             obj.LeftHanded = False
@@ -302,7 +345,20 @@ class ThreadCutter(object):
         anchor = form.effective_surface_radius(
             obj.Mode, obj.Diameter.Value, obj.Pitch.Value, obj.Angle.Value,
             obj.RootLand.Value, obj.CrestLand.Value, obj.Clearance.Value,
-            surface, obj.FlatClearance.Value)
+            surface, obj.FlatClearance.Value,
+            # Anchored unclamped only when material really will be added --
+            # the same test add_material() uses, so the cutter and the fuse
+            # can never disagree about where the surface ends up.
+            allow_fill=fill_needed(obj) > 0.0)
+        # Where the material's boundary sits once any fill has been fused on.
+        # With nothing added this is the blank itself and the relief shell
+        # bridges the difference, exactly as before; with a sleeve or a liner
+        # the boundary IS the anchor and the relief is the plain clearance
+        # shell again.
+        if obj.Mode == form.EXTERNAL:
+            relief_surface = max(surface, anchor)
+        else:
+            relief_surface = min(surface, anchor)
         points = form.cutter_points(
             obj.Mode, obj.ThreadForm, obj.Diameter.Value, obj.Pitch.Value,
             obj.Angle.Value, obj.RootLand.Value, obj.CrestLand.Value,
@@ -347,9 +403,7 @@ class ThreadCutter(object):
         # against -- 48.5915 mm3 measured out of a hex head on the fixture
         # that first surfaced it.
         feature_lo, feature_hi = pitch_v, pitch_v + length_v
-        flush = obj.FlushEnds
-        z_keep_lo = feature_lo if (flush or not near_free) else 0.0
-        z_keep_hi = feature_hi if (flush or not far_free) else height
+        z_keep_lo, z_keep_hi, _height = keep_range(obj)
         if z_keep_lo > 0.0 or z_keep_hi < height:
             radius_reach = max(pt[0] for pt in points)
             shape = cutter.clip_to_axial_range(shape, z_keep_lo, z_keep_hi,
@@ -387,7 +441,7 @@ class ThreadCutter(object):
         extras = []
         relief = cutter.crest_relief(
             obj.Mode,
-            surface,
+            relief_surface,
             form.crest_radius(obj.Mode, anchor,
                               obj.Clearance.Value, obj.Angle.Value),
             z_keep_lo, z_keep_hi, obj.Overrun.Value)
@@ -494,6 +548,76 @@ class ThreadCutter(object):
                 obj.LocalPlacement).multiply(offset)
         else:
             obj.Placement = offset
+
+
+class ThreadFiller(object):
+    """The tube of material fused on before a thread that cannot be cut.
+
+    Derives EVERYTHING from the cutter it points at rather than carrying its
+    own copies, so the two can never drift apart -- and so re-parameterising
+    the cutter re-parameterises this with it, through the ordinary
+    dependency, with nothing to keep in step by hand.
+
+    When no fill is needed the tube is a thin sliver lying INSIDE the
+    existing material, which the fuse absorbs without changing the part. That
+    keeps the object valid through any edit -- a null shape would break the
+    fuse the moment someone dialled the diameter back the other way.
+    """
+
+    def __init__(self, obj):
+        self.Type = "ThreadFiller"
+        self.last_error = None
+        self.add_properties(obj)
+        obj.Proxy = self
+
+    def add_properties(self, obj):
+        if not hasattr(obj, "Cutter"):
+            obj.addProperty(
+                "App::PropertyLink", "Cutter", "Base",
+                "The ThreadCutter this fill is sized from. Every dimension "
+                "comes from there; nothing is duplicated here")
+
+    def onDocumentRestored(self, obj):
+        if not hasattr(self, "last_error"):
+            self.last_error = None
+        self.add_properties(obj)
+
+    def execute(self, obj):
+        try:
+            self._build_shape(obj)
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+        self.last_error = None
+
+    def _build_shape(self, obj):
+        source = obj.Cutter
+        if source is None:
+            raise cutter.CutterError("fill has no cutter to size itself from")
+        surface = source.SurfaceRadius.Value
+        thickness = fill_needed(source)
+        # Reach INTO the solid so the fuse has real overlap rather than a
+        # pair of coincident faces. Bounded by the surface radius so a thin
+        # tube's liner cannot be asked to reach through its own axis.
+        overlap = min(0.5, 0.5 * surface)
+        if source.Mode == form.EXTERNAL:
+            inner, outer = surface - overlap, surface + thickness
+        else:
+            inner, outer = surface - thickness, surface + overlap
+        z_lo, z_hi, _height = keep_range(source)
+        obj.Shape = cutter.fill_tube(inner, outer, z_lo, z_hi)
+        # After the Shape assignment, which resets Placement. The same frame
+        # as the cutter, so the tube lands exactly over the threaded run; the
+        # cutter's phase rotation is about the axis and a tube does not care.
+        obj.Placement = source.Placement
+
+
+def make_filler(doc, cutter_obj, name="ThreadFill"):
+    """Create a ThreadFiller sized from `cutter_obj`."""
+    obj = doc.addObject("Part::FeaturePython", name)
+    ThreadFiller(obj)
+    obj.Cutter = cutter_obj
+    return obj
 
 
 class ThreadCutterViewProvider(object):

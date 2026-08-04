@@ -314,6 +314,38 @@ def crest_relief(mode, surface_radius, crest_radius, z_lo, z_hi, overrun):
     return solid
 
 
+def fill_tube(inner, outer, z_lo, z_hi):
+    """A tube of material to FUSE on before threading.
+
+    The one thing a cutter cannot do is add material, so a thread larger than
+    its shaft or smaller than its bore needs this fused on first -- a sleeve
+    around the shaft, or a liner inside the bore -- and then the ordinary
+    cutter works on the result.
+
+    `inner` deliberately reaches INTO the existing solid rather than stopping
+    on its surface: coincident faces are the classic way to make OCC return a
+    valid-looking fuse with a seam through it, and an overlap costs nothing
+    because the material is already there.
+
+    Revolved from a closed rectangle, like crest_relief, so building it needs
+    no boolean of its own.
+    """
+    if z_hi <= z_lo:
+        raise CutterError(
+            "fill range [%.4f, %.4f] is empty or inverted" % (z_lo, z_hi))
+    if inner <= 0.0 or outer <= inner:
+        raise CutterError(
+            "fill tube needs 0 < inner < outer, got [%.4f, %.4f]"
+            % (inner, outer))
+    pts = [App.Vector(inner, 0.0, z_lo), App.Vector(outer, 0.0, z_lo),
+           App.Vector(outer, 0.0, z_hi), App.Vector(inner, 0.0, z_hi)]
+    face = Part.Face(Part.makePolygon(pts + [pts[0]]))
+    solid = face.revolve(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 360.0)
+    if not solid.isValid() or not solid.Solids:
+        raise CutterError("fill tube revolve produced an invalid solid")
+    return solid
+
+
 def clip_to_axial_range(shape, z_lo, z_hi, radius_reach):
     """Keep only the part of `shape` with builder-frame z in [z_lo, z_hi].
 

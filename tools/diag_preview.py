@@ -91,11 +91,12 @@ def shaft(doc, radius=4.0, height=30.0):
     raise SystemExit("no cylindrical face")
 
 
-def panel_for(doc, base, sub):
+def panel_for(doc, base, sub, **defaults):
     from tapdie import api
     circle = selection.resolve(base, sub)
-    return command.ThreadTaskPanel(base, sub, circle,
-                                   api.defaults_for(circle)), circle
+    values = api.defaults_for(circle)
+    values.update(defaults)
+    return command.ThreadTaskPanel(base, sub, circle, values), circle
 
 
 doc = App.newDocument("preview")
@@ -299,7 +300,10 @@ doc3 = App.newDocument("orphan")
 App.setActiveDocument(doc3.Name)
 base3, sub3 = shaft(doc3, radius=0.3, height=6.0)
 baseline3 = {o.Name for o in doc3.Objects}
-panel3, _c3 = panel_for(doc3, base3, sub3)
+# AddMaterial off deliberately: with it on a 0.6mm shaft no longer fails at
+# all -- a sleeve is fused on and it builds -- and this section needs a
+# genuine first-build failure to exercise the orphan path at all.
+panel3, _c3 = panel_for(doc3, base3, sub3, AddMaterial=False)
 check("a 0.6mm shaft fails the first preview", not panel3.preview_ok,
       panel3.note.text())
 check("the failed preview explains itself in real terms",
@@ -391,12 +395,23 @@ if panel5.preview_ok:
               panel5.cutter_obj.Shape.optimalBoundingBox().YMax) >= 10.0,
           "reach=%.3f" % panel5.cutter_obj.Shape.optimalBoundingBox().XMax)
 panel5.diameter.setValue(24.0)
-guarded("Refresh with an impossible diameter", panel5._rebuild)
-check("asking for 24 on a 20mm shaft says it cannot",
-      "24.00" in panel5.note.text() and "20.00" in panel5.note.text()
-      and "removes material" in panel5.note.text(),
+guarded("Refresh with a diameter bigger than the shaft", panel5._rebuild)
+check("asking for 24 on a 20mm shaft builds by adding material",
+      panel5.preview_ok, panel5.note.text())
+check("and says so before OK does it",
+      "add" in panel5.note.text() and "24.00" in panel5.note.text(),
       panel5.note.text())
 guarded("reject() the diameter panel", panel5.reject)
+
+# With the setting off, the old behaviour must return intact.
+panel5b, _c5b = panel_for(doc5, base5, sub5, AddMaterial=False)
+panel5b.diameter.setValue(24.0)
+guarded("Refresh with material off", panel5b._rebuild)
+check("with AddMaterial off it says it cannot instead",
+      "24.00" in panel5b.note.text() and "20.00" in panel5b.note.text()
+      and "removes material" in panel5b.note.text(),
+      panel5b.note.text())
+guarded("reject() the no-material panel", panel5b.reject)
 
 # --- simple / advanced ------------------------------------------------------
 # Only an offscreen GUI can see a widget's visibility, so this is the only
@@ -510,6 +525,42 @@ doc7.recompute()
 left7 = sorted({o.Name for o in doc7.Objects} - baseline7)
 check("undo took the coupon with the thread", not left7,
       "left: %s" % left7)
+
+# --- adding material, end to end -------------------------------------------
+doc8 = App.newDocument("addstock")
+App.setActiveDocument(doc8.Name)
+base8, sub8 = shaft(doc8, radius=4.0, height=20.0)
+baseline8 = {o.Name for o in doc8.Objects}
+panel8, _c8 = panel_for(doc8, base8, sub8)
+panel8.diameter.setValue(12.0)
+panel8.pitch.setValue(1.75)
+guarded("Refresh asking for M12 on an 8mm shaft", panel8._rebuild)
+check("a thread larger than its shaft previews", panel8.preview_ok,
+      panel8.note.text())
+check("the panel says material will be added first",
+      "add" in panel8.note.text(), panel8.note.text())
+check("no fuse exists during the preview",
+      not any(o.TypeId == "Part::Fuse" for o in doc8.Objects),
+      "a boolean appeared before OK")
+check("accept() applies", guarded("accept() with fill", panel8.accept) is True)
+doc8.recompute()
+fuses = [o for o in doc8.Objects if o.TypeId == "Part::Fuse"]
+check("OK fused exactly one stock tube on", len(fuses) == 1,
+      "%d fuses" % len(fuses))
+cuts8 = [o for o in doc8.Objects if o.TypeId == "Part::Cut"]
+check("the result is a single valid solid",
+      len(cuts8) == 1 and cuts8[0].Shape.isValid()
+      and len(cuts8[0].Shape.Solids) == 1)
+if cuts8:
+    box8 = cuts8[0].Shape.optimalBoundingBox()
+    check("the thread really is bigger than the shaft was",
+          max(box8.XLength, box8.YLength) > 8.0,
+          "%.3f across, shaft was 8.000"
+          % max(box8.XLength, box8.YLength))
+doc8.undo()
+doc8.recompute()
+left8 = sorted({o.Name for o in doc8.Objects} - baseline8)
+check("one undo removes the fill as well", not left8, "left: %s" % left8)
 
 line("")
 line("PREVIEW DIAG: %d failure(s)" % len(failures))

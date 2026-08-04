@@ -214,6 +214,16 @@ class ThreadTaskPanel(object):
         self.left_handed = QtGui.QCheckBox()
         row("Left handed", self.left_handed, advanced=True)
 
+        self.add_material = QtGui.QCheckBox()
+        self.add_material.setChecked(bool(defaults.get("AddMaterial", True)))
+        self.add_material.setToolTip(
+            "Fuse a tube of material on first when -- and only when -- the "
+            "diameter you asked for cannot be cut from the blank:\n"
+            "a sleeve to make an external thread LARGER than its shaft, a "
+            "liner to make an internal one SMALLER than its bore.\n"
+            "Off, those two cases fall back to the blank and say so.")
+        row("Add material if needed", self.add_material, advanced=True)
+
         self.test_piece = QtGui.QCheckBox()
         self.test_piece.setToolTip(
             "Also build a small male/female pair beside the part, cut with "
@@ -255,7 +265,7 @@ class ThreadTaskPanel(object):
                        self.crest_land, self.start_angle,
                        self.flat_clearance):
             widget.valueChanged.connect(self._touch)
-        for widget in (self.left_handed, self.flush_ends):
+        for widget in (self.left_handed, self.flush_ends, self.add_material):
             widget.toggled.connect(self._touch)
         # test_piece deliberately NOT connected: it adds separate objects on
         # OK and changes nothing about the previewed cutter, so marking the
@@ -318,6 +328,7 @@ class ThreadTaskPanel(object):
             "Direction": self.direction.currentText(),
             "Clearance": self.clearance.value(),
             "FlatClearance": self.flat_clearance.value(),
+            "AddMaterial": self.add_material.isChecked(),
             "Overrun": self.overrun.value(),
             "StartAngle": self.start_angle.value(),
             "FlushEnds": self.flush_ends.isChecked(),
@@ -443,6 +454,18 @@ class ThreadTaskPanel(object):
                 self.note.setText(mismatch)
                 self.note.setStyleSheet("color: #b9770e;")
                 return
+            from . import feature as feature_mod
+
+            fill = feature_mod.fill_needed(self.cutter_obj)
+            if fill > 0.0:
+                surface = "shaft" if self.mode.currentText() == form.EXTERNAL \
+                    else "bore"
+                self.note.setText(
+                    "OK will add %.2fmm of material around the %s first -- "
+                    "cutting alone cannot reach %.2fmm here."
+                    % (fill, surface, self.diameter.value()))
+                self.note.setStyleSheet("color: #1a6b9a;")
+                return
         if self.thread_form.currentText() == form.ISO:
             self.note.setText(
                 "ISO 60 deg gives a 60 deg overhang on every flank. Printed "
@@ -474,13 +497,25 @@ class ThreadTaskPanel(object):
         # invalid -- so roll just the Cut back and keep the dialog open
         # rather than committing a broken result.
         from . import api
+        # Everything added from here is rolled back together on failure, so
+        # remember where the cutter's own objects ended. Popping a single
+        # trailing object was enough when the Cut was the only thing this
+        # step could create; adding material makes it two more.
+        mark = len(self.created)
         try:
-            self.cut = api.apply_cut(self.doc, self.base, self.cutter_obj,
+            # Material first, and only if the requested diameter cannot be
+            # reached by cutting -- add_material returns `base` untouched in
+            # the ordinary case. The panel used to call apply_cut directly
+            # and so skipped this entirely: the note promised a sleeve and
+            # OK quietly cut a clamped thread instead.
+            stock = api.add_material(self.doc, self.base, self.cutter_obj,
+                                     self.created)
+            self.cut = api.apply_cut(self.doc, stock, self.cutter_obj,
                                      self.created)
         except self._errors() as exc:
-            if self.cut is None and self.created \
-                    and self.created[-1] is not self.cutter_obj:
-                api.discard(self.doc, self.created.pop())
+            if self.cut is None:
+                api.discard(self.doc, *reversed(self.created[mark:]))
+                del self.created[mark:]
             self._say(exc)
             QtGui.QMessageBox.warning(
                 self.form, "Tap / Die",

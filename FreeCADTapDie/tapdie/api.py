@@ -69,11 +69,17 @@ def diameter_note(cutter_obj):
     # shaft, or smaller than the bore -- so anything reported here is a
     # request that was genuinely clamped, not a rounding difference.
     flat = cutter_obj.FlatClearance.Value
+    # The SAME predicate feature.execute and add_material use. Reading the
+    # AddMaterial flag directly instead let this report "cuts 20.00, not
+    # 24.00" for a cutter that was about to be clamped, and stay silent for
+    # one that was not -- the note and the geometry disagreeing is worse
+    # than either being wrong alone.
+    fill = feature.fill_needed(cutter_obj) > 0.0
     anchor = form.effective_surface_radius(
         mode, cutter_obj.Diameter.Value, cutter_obj.Pitch.Value,
         cutter_obj.Angle.Value, cutter_obj.RootLand.Value,
         cutter_obj.CrestLand.Value, cutter_obj.Clearance.Value,
-        cutter_obj.SurfaceRadius.Value, flat)
+        cutter_obj.SurfaceRadius.Value, flat, allow_fill=fill)
     got = form.achieved_diameter(
         mode, cutter_obj.Pitch.Value, cutter_obj.Angle.Value,
         cutter_obj.RootLand.Value, cutter_obj.CrestLand.Value,
@@ -224,6 +230,42 @@ def build_cutter(doc, base, sub_name, overrides=None, created=None):
     return cutter_obj
 
 
+def add_material(doc, base, cutter_obj, created=None):
+    """Fuse a tube onto `base` when the thread cannot be cut from it alone.
+
+    Returns the object the cut should consume: the new Part::Fuse when one
+    was needed, or `base` untouched when it was not. Nothing is created in
+    the ordinary case -- "only if needed" is the whole point, and a fuse the
+    user did not ask for is a boolean, an object and a hidden original.
+    """
+    if created is None:
+        created = []
+    if feature.fill_needed(cutter_obj) <= 0.0:
+        return base
+
+    filler = feature.make_filler(doc, cutter_obj)
+    created.append(filler)
+    fuse = doc.addObject("Part::Fuse", "ThreadStock")
+    created.append(fuse)
+    fuse.Base = base
+    fuse.Tool = filler
+    fuse.Label = "%s + thread stock" % base.Label
+    doc.recompute()
+    _check_recomputed(filler, "fill")
+    _check_recomputed(fuse, "fill boolean")
+    # Part::Fuse is FreeCAD's, so it cannot be guarded from inside -- and a
+    # fuse is exactly where a coincident face would show up as a valid shape
+    # carrying a seam. cutter.fill_tube overlaps deliberately for that
+    # reason; this is the check that the overlap did its job.
+    if fuse.Shape.isNull() or not fuse.Shape.isValid():
+        raise ThreadError("adding material produced an invalid solid")
+    if len(fuse.Shape.Solids) != 1:
+        raise ThreadError(
+            "adding material produced %d solids, expected 1 -- the tube did "
+            "not merge with the part" % len(fuse.Shape.Solids))
+    return fuse
+
+
 def apply_cut(doc, base, cutter_obj, created=None):
     """Perform the boolean, consuming `base` with `cutter_obj`.
 
@@ -244,11 +286,16 @@ def apply_cut(doc, base, cutter_obj, created=None):
 
 
 def build_thread(doc, base, sub_name, overrides=None, created=None):
-    """Create the cutter and the boolean.  Returns (cutter, cut)."""
+    """Create the cutter and the boolean.  Returns (cutter, cut).
+
+    Between the two, material is fused on if -- and only if -- the requested
+    Diameter cannot be reached by cutting the blank alone.
+    """
     if created is None:
         created = []
     cutter_obj = build_cutter(doc, base, sub_name, overrides, created)
-    cut = apply_cut(doc, base, cutter_obj, created)
+    stock = add_material(doc, base, cutter_obj, created)
+    cut = apply_cut(doc, stock, cutter_obj, created)
     return cutter_obj, cut
 
 

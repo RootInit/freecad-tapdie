@@ -279,9 +279,34 @@ def required_surface_radius(mode, diameter, pitch, angle, root_land,
             + flat_clearance(clearance if flat is None else flat))
 
 
+def fill_thickness(mode, diameter, pitch, angle, root_land, crest_land,
+                   clearance, surface_radius, flat=None):
+    """Radial thickness of material that must be ADDED to reach `diameter`.
+
+    Zero whenever cutting alone can get there -- a thread smaller than the
+    shaft, or larger than the bore -- which is the ordinary case. Positive
+    only in the direction no cutting tool can manage on its own:
+
+      * EXTERNAL wanting a thread LARGER than the shaft: a sleeve around it.
+      * INTERNAL wanting a thread SMALLER than the bore: a liner inside it.
+
+    Fusing that on first is what lets Diameter work in both directions
+    instead of clamping to whatever the blank happened to be.
+    """
+    _check_mode(mode)
+    required = required_surface_radius(mode, diameter, pitch, angle,
+                                       root_land, crest_land, clearance,
+                                       flat)
+    if abs(required - surface_radius) < MIN_RELIEF:
+        return 0.0
+    if mode == EXTERNAL:
+        return max(0.0, required - surface_radius)
+    return max(0.0, surface_radius - required)
+
+
 def effective_surface_radius(mode, diameter, pitch, angle, root_land,
                              crest_land, clearance, surface_radius,
-                             flat=None):
+                             flat=None, allow_fill=False):
     """Radius the profile is anchored on once `Diameter` is honoured.
 
     `Diameter` is not a label: it drives the size, and the cutter reaches
@@ -322,6 +347,11 @@ def effective_surface_radius(mode, diameter, pitch, angle, root_land,
     # one extrusion width, 0.4mm; a micron is four hundred times under that.
     if abs(required - surface_radius) < MIN_RELIEF:
         return surface_radius
+    if allow_fill:
+        # Material is being fused on first, so the blank stops being a
+        # limit: the profile anchors where the requested diameter wants it
+        # and fill_thickness() says how much has to be added to get there.
+        return required
     if mode == EXTERNAL:
         # Can only turn the shaft DOWN.
         return min(required, surface_radius)
