@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 *.FCBak
 scratch/
+.fc-test-output
+tools/*.log
+tools/*.txt
+tools/*.marker
