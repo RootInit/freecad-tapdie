@@ -1531,117 +1531,191 @@ class TestSelectingAFlatCircularFace(unittest.TestCase):
         self.assertIn("no circular edge", str(caught.exception))
 
 
-class TestPrintTestPiece(unittest.TestCase):
-    """The coupon exists to answer "do MY settings mate on MY printer?", so
-    what matters is that it goes through the same cutter as the real thread
-    and comes out at nominal with nothing relieved."""
+class TestEdgeCases(unittest.TestCase):
+    """Awkward inputs, swept deliberately rather than met by accident.
+
+    Everything here was probed first and is pinned at the behaviour that was
+    actually measured -- builds that work, and refusals that are supposed to
+    refuse. Two of these probes found real defects: a fillet was threadable,
+    and a clearance overflow blamed the groove depth for it.
+    """
 
     def setUp(self):
-        self.doc = App.newDocument("couponstest", hidden=True)
+        self.doc = App.newDocument("edgetest", hidden=True)
 
     def tearDown(self):
         App.closeDocument(self.doc.Name)
 
-    def _params(self, **over):
-        params = {
-            "Mode": form.EXTERNAL, "ThreadForm": form.PRINTED,
-            "Diameter": 8.0, "Pitch": 1.25, "Length": 10.0,
-            "Direction": form.BOTH, "Clearance": 0.12,
-            "Overrun": 1.0, "StartAngle": 0.0,
-            "FlushEnds": True, "LeftHanded": False,
-        }
-        params.update(over)
-        return params
+    def _face(self, obj, radius):
+        for i, f in enumerate(obj.Shape.Faces):
+            if (isinstance(f.Surface, Part.Cylinder)
+                    and abs(f.Surface.Radius - radius) < 1e-6):
+                return "Face%d" % (i + 1)
+        raise AssertionError("no cylindrical face at r=%.3f" % radius)
 
-    def test_builds_a_mated_pair(self):
-        from tapdie import testpiece
+    def _shaft(self, radius=4.0, height=30.0, placement=None):
+        obj = self.doc.addObject("Part::Cylinder", "Shaft")
+        obj.Radius, obj.Height = radius, height
+        if placement is not None:
+            obj.Placement = placement
+        self.doc.recompute()
+        return obj, self._face(obj, radius)
 
-        created = []
-        male, female = testpiece.build(self.doc, self._params(), created)
-        for obj, what in ((male, "male"), (female, "female")):
-            self.assertFalse(obj.Shape.isNull(), "%s is null" % what)
-            self.assertTrue(obj.Shape.isValid(), "%s is invalid" % what)
-            self.assertEqual(len(obj.Shape.Solids), 1,
-                             "%s is not one solid" % what)
-            self.assertGreater(obj.Shape.Volume, 0.0)
-        self.assertGreaterEqual(len(created), 6,
-                                "every object must be tracked for undo")
+    def _ok(self, cut):
+        self.assertTrue(cut.Shape.isValid())
+        self.assertEqual(len(cut.Shape.Solids), 1)
 
-    def test_the_pieces_do_not_overlap(self):
-        """They print side by side, so they must not share space."""
-        from tapdie import testpiece
+    # ---- axis and placement --------------------------------------------
 
-        male, female = testpiece.build(self.doc, self._params())
-        m = male.Shape.optimalBoundingBox()
-        f = female.Shape.optimalBoundingBox()
-        self.assertGreater(f.XMin, m.XMax - 1e-6,
-                           "the coupon halves intersect: male XMax %.3f, "
-                           "female XMin %.3f" % (m.XMax, f.XMin))
+    def test_an_axis_pointing_the_other_way(self):
+        """circle.axis comes out (0,0,-1), and App.Rotation(+Z, -Z) is the
+        degenerate antiparallel case -- any perpendicular axis will do, so
+        the one FreeCAD picks must not matter."""
+        obj = self.doc.addObject("Part::Feature", "Down")
+        obj.Shape = Part.makeCylinder(4.0, 30.0, App.Vector(0, 0, 0),
+                                      App.Vector(0, 0, -1))
+        self.doc.recompute()
+        _c, cut = api.create_thread(self.doc, obj, self._face(obj, 4.0))
+        self._ok(cut)
 
-    def test_neither_blank_needs_relieving(self):
-        """Both are cut at nominal, so a bad fit means the CLEARANCE is
-        wrong -- never the blank. api.diameter_note must stay silent."""
-        from tapdie import testpiece
+    def test_a_base_that_is_rotated_and_translated(self):
+        obj, sub = self._shaft(placement=App.Placement(
+            App.Vector(11, -7, 3), App.Rotation(App.Vector(1, 1, 0), 37)))
+        _c, cut = api.create_thread(self.doc, obj, sub)
+        self._ok(cut)
 
-        created = []
-        testpiece.build(self.doc, self._params(), created)
-        cutters = [o for o in created
-                   if getattr(getattr(o, "Proxy", None), "Type", None)
-                   == "ThreadCutter"]
-        self.assertEqual(len(cutters), 2)
-        for cutter_obj in cutters:
-            self.assertIsNone(
-                api.diameter_note(cutter_obj),
-                "%s blank is the wrong size: %s"
-                % (cutter_obj.Mode, api.diameter_note(cutter_obj)))
+    def test_threading_the_result_of_an_earlier_thread(self):
+        """Chaining: the second selection resolves against a Part::Cut."""
+        obj, sub = self._shaft()
+        _c1, cut1 = api.create_thread(self.doc, obj, sub, {"Length": 8.0})
+        self.doc.recompute()
+        _c2, cut2 = api.create_thread(
+            self.doc, cut1, self._face(cut1, 4.0), {"Length": 6.0})
+        self._ok(cut2)
 
-    def test_it_carries_the_settings_it_was_given(self):
-        """A coupon cut with different settings than the part would answer a
-        question nobody asked."""
-        from tapdie import testpiece
+    # ---- selection refusals ---------------------------------------------
 
-        created = []
-        params = self._params(Pitch=2.0, Clearance=0.2,
-                              LeftHanded=True, StartAngle=30.0)
-        testpiece.build(self.doc, params, created)
-        cutters = [o for o in created
-                   if getattr(getattr(o, "Proxy", None), "Type", None)
-                   == "ThreadCutter"]
-        for cutter_obj in cutters:
-            self.assertAlmostEqual(cutter_obj.Pitch.Value, 2.0, places=9)
-            self.assertAlmostEqual(cutter_obj.Clearance.Value, 0.2, places=9)
-            self.assertTrue(cutter_obj.LeftHanded)
-            self.assertAlmostEqual(cutter_obj.StartAngle.Value, 30.0,
-                                   places=9)
+    def test_a_fillet_is_not_threadable(self):
+        """THE silent-wrong-result guard. A fillet is a cylindrical face and
+        used to resolve happily -- r=4.00, a 20mm run -- so a mis-click on a
+        rounded corner would have cut a helix around mostly empty air."""
+        obj = self.doc.addObject("Part::Feature", "Half")
+        obj.Shape = Part.makeCylinder(4.0, 20.0, App.Vector(),
+                                      App.Vector(0, 0, 1), 180)
+        self.doc.recompute()
+        with self.assertRaises(selection.SelectionError) as caught:
+            selection.resolve(obj, self._face(obj, 4.0))
+        self.assertIn("180 degrees round", str(caught.exception))
 
-    def test_each_piece_gets_its_own_mode(self):
-        from tapdie import testpiece
+    def test_a_full_bore_face_is_still_accepted(self):
+        """The guard must not reject the ordinary case it sits next to."""
+        obj = self.doc.addObject("Part::Feature", "Block")
+        obj.Shape = Part.makeCylinder(12.0, 20.0).cut(
+            Part.makeCylinder(3.4, 20.0))
+        self.doc.recompute()
+        circle = selection.resolve(obj, self._face(obj, 3.4))
+        self.assertAlmostEqual(circle.radius, 3.4, places=6)
 
-        created = []
-        testpiece.build(self.doc, self._params(), created)
-        modes = sorted(o.Mode for o in created
-                       if getattr(getattr(o, "Proxy", None), "Type", None)
-                       == "ThreadCutter")
-        self.assertEqual(modes, [form.EXTERNAL, form.INTERNAL])
+    def test_a_conical_face_is_refused(self):
+        obj = self.doc.addObject("Part::Cone", "Cone")
+        obj.Radius1, obj.Radius2, obj.Height = 5.0, 2.0, 10.0
+        self.doc.recompute()
+        index = [i + 1 for i, f in enumerate(obj.Shape.Faces)
+                 if isinstance(f.Surface, Part.Cone)][0]
+        with self.assertRaises(selection.SelectionError):
+            selection.resolve(obj, "Face%d" % index)
 
-    def test_thread_length_stays_small_at_any_pitch(self):
-        from tapdie import testpiece
+    def test_a_spherical_face_is_refused(self):
+        obj = self.doc.addObject("Part::Sphere", "Ball")
+        self.doc.recompute()
+        with self.assertRaises(selection.SelectionError):
+            selection.resolve(obj, "Face1")
 
-        for pitch in (0.4, 1.25, 3.8, 10.0):
-            length = testpiece.thread_length(pitch)
-            self.assertGreaterEqual(length, testpiece.MIN_THREAD)
-            self.assertLessEqual(length, testpiece.MAX_THREAD,
-                                 "pitch %.2f made a %.1fmm coupon"
-                                 % (pitch, length))
+    def test_a_stale_subelement_name_is_refused(self):
+        obj, _sub = self._shaft()
+        with self.assertRaises(selection.SelectionError) as caught:
+            selection.resolve(obj, "Face999")
+        self.assertIn("stale", str(caught.exception))
 
-    def test_a_coarse_pitch_still_gets_several_turns(self):
-        from tapdie import testpiece
+    def test_a_vertex_selection_is_refused(self):
+        obj, _sub = self._shaft()
+        with self.assertRaises(selection.SelectionError):
+            selection.resolve(obj, "Vertex1")
 
-        for pitch in (0.5, 1.25, 2.5):
-            turns = testpiece.thread_length(pitch) / pitch
-            self.assertGreaterEqual(turns, 3.0,
-                                    "pitch %.2f gives only %.1f turns"
-                                    % (pitch, turns))
+    # ---- extent ----------------------------------------------------------
+
+    def test_a_run_shorter_than_one_turn(self):
+        obj, sub = self._shaft()
+        _c, cut = api.create_thread(self.doc, obj, sub,
+                                    {"Pitch": 4.0, "Length": 1.0})
+        self._ok(cut)
+
+    def test_a_run_far_longer_than_the_part(self):
+        obj, sub = self._shaft(height=10.0)
+        _c, cut = api.create_thread(self.doc, obj, sub, {"Length": 60.0})
+        self._ok(cut)
+
+    def test_a_very_small_overrun(self):
+        obj, sub = self._shaft()
+        _c, cut = api.create_thread(self.doc, obj, sub, {"Overrun": 0.01})
+        self._ok(cut)
+
+    # ---- profile limits --------------------------------------------------
+
+    def test_a_very_blunt_custom_angle_builds(self):
+        obj, sub = self._shaft()
+        _c, cut = api.create_thread(
+            self.doc, obj, sub,
+            {"ThreadForm": form.CUSTOM, "Angle": 169.5,
+             "RootLand": 0.02, "CrestLand": 0.02})
+        self._ok(cut)
+
+    def test_a_clearance_that_eats_the_shaft_says_which_term_did_it(self):
+        """It used to blame the groove: a 5.0 clearance on an 8mm shaft
+        reported that a "thread depth 0.5988" was deeper than a 4.0000
+        radius, which reads as nonsense. The 7.07mm offset was the culprit.
+        """
+        with self.assertRaises(form.ProfileError) as caught:
+            form.cutter_points(form.EXTERNAL, form.PRINTED, 8.0, 1.25, 90.0,
+                               0.026, 0.026, 5.0, 4.0, 1.0)
+        message = str(caught.exception)
+        self.assertIn("clearance offset", message)
+        self.assertIn("7.07", message)
+
+    def test_a_pitch_too_coarse_for_the_shaft_is_refused(self):
+        obj, sub = self._shaft()
+        with self.assertRaises(api.ThreadError):
+            api.create_thread(self.doc, obj, sub,
+                              {"Pitch": 20.0, "Length": 25.0})
+
+    # ---- fill edges -------------------------------------------------------
+
+    def test_a_liner_that_would_reach_the_axis_is_refused(self):
+        obj = self.doc.addObject("Part::Feature", "Block")
+        obj.Shape = Part.makeCylinder(15.0, 20.0).cut(
+            Part.makeCylinder(5.0, 20.0))
+        self.doc.recompute()
+        with self.assertRaises(api.ThreadError):
+            api.create_thread(self.doc, obj, self._face(obj, 5.0),
+                              {"Diameter": 2.0, "Pitch": 0.5, "Length": 6.0})
+
+    def test_a_fill_on_a_run_shorter_than_the_inset(self):
+        """feature.FILL_INSET is 0.25 at each end; a 1mm run cannot spare
+        that, so the inset is clamped to a fifth of the run instead."""
+        obj, sub = self._shaft()
+        _c, cut = api.create_thread(
+            self.doc, obj, sub,
+            {"Diameter": 12.0, "Pitch": 1.75, "Length": 1.0})
+        self._ok(cut)
+
+    # ---- scale ------------------------------------------------------------
+
+    def test_the_small_end_of_the_table(self):
+        obj, sub = self._shaft(radius=1.5, height=12.0)
+        _c, cut = api.create_thread(
+            self.doc, obj, sub,
+            {"Diameter": 3.0, "Pitch": 0.5, "Length": 6.0})
+        self._ok(cut)
 
 
 class TestUndoRemovesTheWholeThread(unittest.TestCase):

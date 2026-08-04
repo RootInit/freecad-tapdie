@@ -1,6 +1,7 @@
 """Turn a user selection into an axis, a radius and a thread mode."""
 
 import collections
+import math
 
 import FreeCAD as App
 import Part
@@ -87,8 +88,21 @@ def _from_face(face, solid):
     # with a bounding-box formula: summing bb extents times axis components is
     # only correct when the axis is axis-aligned, and is 34.6% wrong on a
     # cylinder tilted 30 degrees off X/Y/Z.
-    _u0, _u1, v0, v1 = face.ParameterRange
+    u0, u1, v0, v1 = face.ParameterRange
     length = abs(v1 - v0)
+
+    # THE FACE MUST GO ALL THE WAY ROUND. A FILLET is a cylindrical face too,
+    # and so is the wall of a slot -- neither has material at every azimuth,
+    # so threading one cuts a helix around an axis that is mostly empty air.
+    # Measured before this guard: a half cylinder resolved happily, reporting
+    # r=4.00 and a 20mm run, and would have been threaded without a word.
+    sweep = abs(u1 - u0)
+    if sweep < 2.0 * math.pi - 1e-4:
+        raise SelectionError(
+            "that cylindrical face only goes %.0f degrees round, so it is a "
+            "fillet or the wall of a slot rather than a shaft or a bore; "
+            "select a full cylinder or the circular edge you want"
+            % math.degrees(sweep))
 
     # surface.Center is the origin of the UNTRIMMED surface's local frame, not
     # a point on the trimmed face -- on a counterbore built from coaxial

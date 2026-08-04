@@ -42,22 +42,8 @@ the thread with it.
 
 The dialog opens **simple** — Mode, Form, Diameter, Pitch, Length, Direction
 and Clearance, which is all it takes to cut a thread. **Show advanced
-settings** adds the angle and land widths, the flat clearance, overrun, start
-angle, flush ends, handedness, and the print test piece.
-
-### Print test piece
-
-Tick it (under advanced) and OK also drops a small male/female pair beside the
-part — a threaded post on a hex flange and a matching hex nut, about 16 × 9 mm
-for an M8. Print it, try it, and you know whether your clearances work before
-committing to the real part.
-
-It is cut by the **same cutter, through the same code path**, carrying every
-setting the real thread has — form, pitch, both clearances, handedness, start
-angle. A coupon built any other way would be free to disagree with the part,
-which would make it worse than useless. Both blanks are sized so nothing is
-relieved, so if the pair does not mate, the setting to change is the
-clearance, not the blank.
+settings** adds the angle and land widths, overrun, start angle, flush ends,
+handedness, and whether material may be added.
 
 ### Things worth knowing
 

@@ -438,9 +438,16 @@ def cutter_points(mode, form_name, diameter, pitch, angle, root_land,
         tip = shoulder - run
         far = surface_radius + overrun
         if tip <= 0.0:
+            # Name BOTH contributors. This used to report the groove depth
+            # alone, so a clearance of 5.0 on an 8mm shaft complained that a
+            # "thread depth 0.5988" was deeper than a 4.0000 radius -- which
+            # reads as nonsense, because it was the 7.07mm clearance offset
+            # that had eaten the shaft, not the groove.
             raise ProfileError(
-                "thread depth %.4f plus clearance is deeper than the shaft "
-                "radius %.4f" % (run, surface_radius))
+                "the cutter reaches r=%.4f, through the axis: a %.4f deep "
+                "groove plus %.4f of clearance offset does not fit inside a "
+                "%.4f radius" % (tip, run, surface_radius - shoulder,
+                                 surface_radius))
 
     return [
         (tip, tip_half),

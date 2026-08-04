@@ -385,7 +385,11 @@ class TestClearance(unittest.TestCase):
     def test_clearance_deeper_than_the_shaft_is_rejected(self):
         with self.assertRaises(form.ProfileError) as ctx:
             self.points(clearance=20.0)
-        self.assertIn("deeper than the shaft", str(ctx.exception))
+        # The message names BOTH the groove and the clearance offset now:
+        # reporting the depth alone made a clearance overflow read as
+        # nonsense ("thread depth 0.5988 deeper than a 4.0000 radius").
+        self.assertIn("through the axis", str(ctx.exception))
+        self.assertIn("clearance offset", str(ctx.exception))
 
 
 class TestCriticalValidation(unittest.TestCase):
@@ -442,7 +446,11 @@ class TestCriticalValidation(unittest.TestCase):
             self.points(mode=form.EXTERNAL, form_name=form.PRINTED,
                         diameter=10.0, pitch=30.0, angle=90.0,
                         crest_land=1.0, surface_radius=5.0)
-        self.assertIn("deeper than the shaft", str(ctx.exception))
+        # The message names BOTH the groove and the clearance offset now:
+        # reporting the depth alone made a clearance overflow read as
+        # nonsense ("thread depth 0.5988 deeper than a 4.0000 radius").
+        self.assertIn("through the axis", str(ctx.exception))
+        self.assertIn("clearance offset", str(ctx.exception))
 
     def test_invalid_mode_is_rejected(self):
         """Mode must be INTERNAL or EXTERNAL, not a typo."""
