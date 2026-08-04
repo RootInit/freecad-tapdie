@@ -4,7 +4,12 @@ import os
 
 import FreeCAD as App
 import FreeCADGui as Gui
-from PySide import QtGui
+from PySide import QtCore, QtGui
+
+# A helical sweep takes the better part of a second, so rebuilding the preview
+# on every keystroke would make the spin boxes unusable. Coalesce edits and
+# rebuild once the user stops typing.
+PREVIEW_DELAY_MS = 450
 
 # Deliberately NOT `from . import api, form, selection` at module scope.
 # That chain pulls in api -> feature -> cutter, which does `import Part` and
@@ -23,13 +28,33 @@ ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(
 
 
 class ThreadTaskPanel(object):
-    """Minimal parameter dialog: everything else is edited on the object."""
+    """Parameter dialog with a live preview.
+
+    The preview is the real thing: the cutter and the Part::Cut are created
+    the moment the dialog opens, inside an undo transaction, and are
+    re-parameterised in place as the controls change. OK commits that
+    transaction; Cancel aborts it and removes the objects. There is no
+    separate "preview mode" geometry that could disagree with the result.
+    """
 
     def __init__(self, base, sub_name, circle, defaults):
         from . import form
 
         self.base, self.sub_name = base, sub_name
         self.circle, self.defaults = circle, defaults
+        # Capture the document ONCE, from the object being threaded.
+        # Re-reading App.ActiveDocument at teardown is not safe: it can be
+        # None, or a different document, by the time the user clicks Cancel
+        # -- and then reject() raises AttributeError before it reaches the
+        # cleanup, stranding the preview's cutter and Part::Cut in the tree
+        # with the user's part swallowed by the boolean. Measured exactly
+        # that in an offscreen GUI run.
+        self.doc = base.Document
+        self.cutter_obj = None
+        self.cut = None
+        self.created = []
+        self.preview_ok = False
+        self.transaction_open = False
 
         self.form = QtGui.QWidget()
         self.form.setWindowTitle("Tap / Die")
@@ -62,6 +87,16 @@ class ThreadTaskPanel(object):
         self.length.setValue(defaults["Length"])
         layout.addRow("Length", self.length)
 
+        self.direction = QtGui.QComboBox()
+        self.direction.addItems(list(form.DIRECTIONS))
+        self.direction.setCurrentText(defaults.get("Direction", form.BOTH))
+        self.direction.setToolTip(
+            "Which way the run travels from the circle you selected.\n"
+            "'Both ways' straddles it -- right for a cylindrical face, "
+            "wrong for an edge at the end of a rod, where half the cutter "
+            "lands in open air.")
+        layout.addRow("Direction", self.direction)
+
         self.clearance = QtGui.QDoubleSpinBox()
         self.clearance.setRange(0.0, 2.0)
         self.clearance.setDecimals(3)
@@ -76,12 +111,97 @@ class ThreadTaskPanel(object):
         self.note.setWordWrap(True)
         layout.addRow(self.note)
 
-        self.thread_form.currentTextChanged.connect(self._warn)
-        self._warn()
+        # One timer, restarted by every edit, so a burst of keystrokes costs
+        # exactly one rebuild.
+        self.timer = QtCore.QTimer()
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(PREVIEW_DELAY_MS)
+        self.timer.timeout.connect(self._rebuild)
 
-    def _warn(self):
+        for widget in (self.mode, self.thread_form, self.direction):
+            widget.currentTextChanged.connect(self._schedule)
+        for widget in (self.diameter, self.pitch, self.length, self.clearance):
+            widget.valueChanged.connect(self._schedule)
+        self.left_handed.toggled.connect(self._schedule)
+
+        self._build()
+
+    # ---- preview -------------------------------------------------------
+
+    def overrides(self):
         from . import form
 
+        return {
+            "Mode": self.mode.currentText(),
+            "ThreadForm": self.thread_form.currentText(),
+            "Diameter": self.diameter.value(),
+            "Pitch": self.pitch.value(),
+            "Length": self.length.value(),
+            "Direction": self.direction.currentText(),
+            "Clearance": self.clearance.value(),
+            "LeftHanded": self.left_handed.isChecked(),
+        }
+
+    def _errors(self):
+        """The checked failure modes, as a tuple for `except`.
+
+        Deliberately NOT `Exception`: these four are what the api contract
+        promises (a bad selection, a profile that cannot sweep, a cutter or
+        boolean that would not build, or an out-of-range property value).
+        Anything else -- a typo'd override key raising AttributeError, say --
+        is a programming error and must surface as a traceback rather than be
+        swallowed into a friendly message.
+        """
+        from . import api, form, selection
+
+        return (api.ThreadError, form.ProfileError, selection.SelectionError,
+                ValueError)
+
+    def _build(self):
+        """Create the preview objects inside an undo transaction."""
+        from . import api
+
+        doc = self.doc
+        doc.openTransaction("Thread")
+        self.transaction_open = True
+        try:
+            self.cutter_obj, self.cut = api.build_thread(
+                doc, self.base, self.sub_name, self.overrides(), self.created)
+            self.preview_ok = True
+        except self._errors() as exc:
+            self.preview_ok = False
+            self._say(exc)
+        else:
+            self._say(None)
+
+    def _schedule(self):
+        self.timer.start()
+
+    def _rebuild(self):
+        """Re-parameterise the existing preview, or build it if it is gone."""
+        from . import api
+
+        if self.cutter_obj is None:
+            self._build()
+            return
+        try:
+            api.update_thread(self.cutter_obj, self.cut, self.overrides())
+            self.preview_ok = True
+        except self._errors() as exc:
+            self.preview_ok = False
+            self._say(exc)
+        else:
+            self._say(None)
+
+    def _say(self, exc):
+        """Advisory text, or the reason the preview is not showing."""
+        from . import form
+
+        if exc is not None:
+            self.note.setText("Cannot build: %s" % exc)
+            self.note.setStyleSheet("color: #c0392b;")
+            return
+        self.note.setStyleSheet("")
         if self.thread_form.currentText() == form.ISO:
             self.note.setText(
                 "ISO 60 deg gives a 60 deg overhang on every flank. Printed "
@@ -92,36 +212,60 @@ class ThreadTaskPanel(object):
         else:
             self.note.setText("")
 
-    def accept(self):
-        from . import api, form, selection
+    # ---- dialog --------------------------------------------------------
 
-        overrides = {
-            "Mode": self.mode.currentText(),
-            "ThreadForm": self.thread_form.currentText(),
-            "Diameter": self.diameter.value(),
-            "Pitch": self.pitch.value(),
-            "Length": self.length.value(),
-            "Clearance": self.clearance.value(),
-            "LeftHanded": self.left_handed.isChecked(),
-        }
-        try:
-            api.create_thread(App.ActiveDocument, self.base, self.sub_name,
-                              overrides)
-        # Explicit, not `except Exception`: these four are the checked
-        # failure modes create_thread's own docstring/contract promises
-        # (a bad selection, a profile that can't sweep, a cutter/boolean
-        # that wouldn't build, or a bad property value). Anything else --
-        # e.g. a typo'd override key raising AttributeError -- is a
-        # programming error, not a user mistake, and must surface as a
-        # crash/traceback rather than be swallowed into a friendly dialog.
-        except (api.ThreadError, form.ProfileError, selection.SelectionError,
-                ValueError) as exc:
-            QtGui.QMessageBox.warning(self.form, "Tap / Die", str(exc))
+    def accept(self):
+        # A pending edit must land before OK does, or the committed geometry
+        # would silently be one edit behind what the dialog shows.
+        if self.timer.isActive():
+            self.timer.stop()
+            self._rebuild()
+        if not self.preview_ok:
+            QtGui.QMessageBox.warning(
+                self.form, "Tap / Die",
+                "The thread does not build with these settings, so there is "
+                "nothing to apply.\n\n%s" % self.note.text())
             return False
+        self.doc.commitTransaction()
+        self.transaction_open = False
         Gui.Control.closeDialog()
         return True
 
     def reject(self):
+        self.timer.stop()
+        doc = self.doc
+        if self.transaction_open:
+            # Remove the objects, then COMMIT -- do not abort.
+            #
+            # abortTransaction cannot be relied on to undo the creation:
+            # measured on this build (tools/diag_undo.py), once a recompute
+            # has run inside the transaction it leaves both objects in the
+            # tree. A plain Part::FeaturePython plus a Part::Cut aborts
+            # perfectly cleanly, so the trigger is the DIAMOND this builds --
+            # the cutter links to the base via AttachedTo and the Cut
+            # consumes both. Clearing those links first was tried and changed
+            # nothing.
+            #
+            # Given that, the removal has to be explicit, and of the three
+            # orderings this is the only one that is both clean and coherent:
+            #   remove, then abort  -- the abort reverts the removals too and
+            #       resurrects both objects (a stranded ThreadCutter001).
+            #   abort, then remove  -- document clean, but the transaction is
+            #       already closed, so the removals stand alone.
+            #   remove, then commit -- the transaction's net effect is
+            #       nothing, created and removed in one step, so undoing it
+            #       is a no-op.
+            #
+            # All three leave the same undo stack: removeObject pushes its
+            # own "Delete" step regardless of the surrounding transaction, so
+            # a cancelled dialog costs an inert pair of entries either way.
+            # The DOCUMENT is clean, which is what matters.
+            from . import api
+            api.discard(doc, *reversed(self.created))
+            doc.commitTransaction()
+            self.transaction_open = False
+        self.created = []
+        self.cutter_obj = self.cut = None
         Gui.Control.closeDialog()
         return True
 

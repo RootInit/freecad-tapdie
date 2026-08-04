@@ -86,6 +86,46 @@ class TestRadialOffset(unittest.TestCase):
         self.assertEqual(form.radial_offset(0.0, 90.0), 0.0)
 
 
+class TestSpan(unittest.TestCase):
+    """Where the threaded run sits relative to the selected circle."""
+
+    def test_both_straddles_the_anchor(self):
+        self.assertEqual(form.span(form.BOTH, 10.0), (-5.0, 5.0))
+
+    def test_forward_starts_at_the_anchor(self):
+        self.assertEqual(form.span(form.FORWARD, 10.0), (0.0, 10.0))
+
+    def test_reverse_ends_at_the_anchor(self):
+        self.assertEqual(form.span(form.REVERSE, 10.0), (-10.0, 0.0))
+
+    def test_every_direction_spans_exactly_the_length(self):
+        for direction in form.DIRECTIONS:
+            lo, hi = form.span(direction, 7.5)
+            self.assertAlmostEqual(hi - lo, 7.5, places=9,
+                                   msg="direction %s" % direction)
+
+    def test_only_both_crosses_the_anchor(self):
+        # The point of the feature: a one-way run must not put half the
+        # cutter on the wrong side of the circle the user picked.
+        self.assertLess(form.span(form.BOTH, 4.0)[0], 0.0)
+        self.assertGreater(form.span(form.BOTH, 4.0)[1], 0.0)
+        for direction in (form.FORWARD, form.REVERSE):
+            lo, hi = form.span(direction, 4.0)
+            self.assertTrue(lo >= 0.0 or hi <= 0.0,
+                            "%s crosses the anchor" % direction)
+
+    def test_unknown_direction_is_rejected(self):
+        with self.assertRaises(form.ProfileError) as ctx:
+            form.span("Sideways", 10.0)
+        self.assertIn("is not one of", str(ctx.exception))
+
+    def test_non_positive_length_is_rejected(self):
+        for length in (0.0, -1.0):
+            with self.assertRaises(form.ProfileError) as ctx:
+                form.span(form.BOTH, length)
+            self.assertIn("must be positive", str(ctx.exception))
+
+
 class TestCrestRadius(unittest.TestCase):
     def test_external_shaves_the_shaft(self):
         r = form.crest_radius(form.EXTERNAL, 4.0, 0.12, 90.0)

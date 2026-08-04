@@ -61,32 +61,89 @@ class TestThreadCutterFeature(unittest.TestCase):
                         "expected an error state, got %s" % obj.State)
         self.assertIn("leaves no flank", obj.getStatusString())
 
-    def test_reversed_keeps_the_sweep_centred_on_the_anchor(self):
-        """Reversed flips the sweep direction, not where it's centred.
+    def _boxes(self):
+        """optimalBoundingBox per direction, plus the shared Length/Pitch.
 
-        Renamed and re-asserted for Task 7's offset fix: the anchor
-        (LocalPlacement/AttachedTo, or the origin when unattached) is a
-        MIDPOINT, so both the forward and reversed sweep must be centred on
-        it symmetrically. The previous version of this test asserted
-        `back_box.ZMax < forward_box.ZMax - 1.0`, which was only true
-        because of the one-pitch offset this task replaced -- with a real
-        AttachedTo anchor at a part's midpoint, that shift walked the
-        reversed cutter off the part entirely (see
-        test_reversed_stays_on_the_part in TestCreateThread).
+        Do NOT try to recover the nominal run by shrinking the box by a
+        pitch: the swept solid also overshoots each end by the profile's own
+        axial half-width, (pitch - crest_land)/2, because the profile is
+        centred on v=0 and swept from z=0 to z=height. That cost a failing
+        assertion by 1.86mm. Compare boxes to each OTHER instead -- placement
+        is a pure translation, so the differences are exact and the
+        overshoot cancels.
         """
+        boxes = {}
+        length = pitch = None
+        for direction in form.DIRECTIONS:
+            obj = self._cutter(Direction=direction)
+            boxes[direction] = obj.Shape.optimalBoundingBox()
+            length, pitch = obj.Length.Value, obj.Pitch.Value
+            self.doc.removeObject(obj.Name)
+        return boxes, length, pitch
+
+    def test_placement_puts_the_run_where_span_says(self):
+        """The placement is the contract: builder z=pitch lands on span()'s
+        low edge, so the run occupies exactly [z_lo, z_hi]."""
+        for direction in form.DIRECTIONS:
+            obj = self._cutter(Direction=direction)
+            z_lo, _z_hi = form.span(direction, obj.Length.Value)
+            self.assertAlmostEqual(
+                obj.Placement.Base.z, z_lo - obj.Pitch.Value, places=6,
+                msg="direction %s" % direction)
+            self.doc.removeObject(obj.Name)
+
+    def test_forward_sits_half_a_length_above_both_ways(self):
+        boxes, length, _pitch = self._boxes()
+        shift = boxes[form.FORWARD].ZMin - boxes[form.BOTH].ZMin
+        self.assertAlmostEqual(shift, length / 2.0, places=3)
+
+    def test_reverse_sits_half_a_length_below_both_ways(self):
+        boxes, length, _pitch = self._boxes()
+        shift = boxes[form.REVERSE].ZMin - boxes[form.BOTH].ZMin
+        self.assertAlmostEqual(shift, -length / 2.0, places=3)
+
+    def test_forward_and_reverse_are_a_whole_length_apart(self):
+        boxes, length, _pitch = self._boxes()
+        self.assertAlmostEqual(
+            boxes[form.FORWARD].ZMin - boxes[form.REVERSE].ZMin,
+            length, places=3)
+
+    def test_direction_moves_the_cutter_without_resizing_it(self):
+        boxes, _length, _pitch = self._boxes()
+        heights = [round(b.ZMax - b.ZMin, 6) for b in boxes.values()]
+        self.assertEqual(len(set(heights)), 1,
+                         "direction changed the swept height: %s" % heights)
+
+    def test_direction_preserves_volume(self):
+        volumes = []
+        for direction in form.DIRECTIONS:
+            obj = self._cutter(Direction=direction)
+            volumes.append(obj.Shape.Volume)
+            self.doc.removeObject(obj.Name)
+        for volume in volumes[1:]:
+            self.assertAlmostEqual(volume, volumes[0], places=6)
+
+    def test_placement_carries_no_rotation(self):
+        """Direction places the run by translation alone.
+
+        The old Reversed used a 180-about-X rotation to run the other way
+        while staying centred, which also flipped which physical end the
+        builder frame's 'near' end meant. Direction needs no rotation, and
+        _detect_free_ends depends on that.
+        """
+        for direction in form.DIRECTIONS:
+            obj = self._cutter(Direction=direction)
+            self.assertAlmostEqual(obj.Placement.Rotation.Angle, 0.0,
+                                   places=9, msg="direction %s" % direction)
+            self.doc.removeObject(obj.Name)
+
+    def test_an_unknown_direction_is_rejected(self):
+        # App::PropertyEnumeration refuses a value outside its own list, so
+        # the guard in form.span is a second line of defence rather than the
+        # only one. Confirm the property itself is enumerated.
         obj = self._cutter()
-        forward_box = obj.Shape.optimalBoundingBox()
-        forward_volume = obj.Shape.Volume
-        obj.Reversed = True
-        self.doc.recompute()
-        back_box = obj.Shape.optimalBoundingBox()
-        # A proper rotation moves the solid without resizing it, and the
-        # centred offset keeps both sweeps spanning the same envelope.
-        self.assertAlmostEqual(obj.Shape.Volume, forward_volume, places=6)
-        self.assertAlmostEqual(back_box.ZMin, forward_box.ZMin, places=3)
-        self.assertAlmostEqual(back_box.ZMax, forward_box.ZMax, places=3)
-        # Confirm Reversed actually took the 180-about-X branch, not a no-op.
-        self.assertAlmostEqual(obj.Placement.Rotation.Angle, math.pi, places=6)
+        with self.assertRaises(ValueError):
+            obj.Direction = "Sideways"
 
     def test_preset_locks_the_angle(self):
         obj = self._cutter(ThreadForm=form.ISO, Pitch=1.25, Diameter=8.0,
@@ -688,15 +745,41 @@ class TestCreateThread(unittest.TestCase):
         with self.assertRaises(Exception) as ctx:
             api.create_thread(self.doc, base, self._bore_face(base, 3.4),
                               {"CrestLand": 99.0})
-        # Pins the diagnostic, not just the exception type: when execute()
-        # raises, obj.Shape is left NULL, and Shape.isValid() on a null
-        # shape raises its OWN native OCCError ("...NULL shape") before the
-        # intended ThreadError message is ever reached -- so without the
-        # isNull() check in api.py, this substring would not appear here.
+        # Pins the diagnostic, not just the exception type. Two guards can
+        # produce it and both share this phrase on purpose: the State check
+        # (which fires first here, since a failed execute leaves the object
+        # Invalid/Touched) and the isNull check. The latter still matters --
+        # Shape.isValid() on a NULL shape raises its own native OCCError
+        # ("...NULL shape"), which would surface instead of this message --
+        # so it is exercised directly in test_null_shape_is_reported_clearly.
         self.assertIn("cutter did not build", str(ctx.exception))
         self.doc.recompute()
         self.assertEqual(len(self.doc.Objects), before,
                          "failed creation left objects behind")
+
+    def test_null_shape_is_reported_clearly(self):
+        """The isNull guard, exercised on its own.
+
+        The State check normally fires first, so without this the isNull
+        branch would sit unexercised and could regress silently. A NULL
+        shape whose object is otherwise Up-to-date is the case it exists
+        for: Shape.isValid() on a null shape raises a native OCCError
+        ("...NULL shape") rather than returning False, so dropping the
+        isNull() test would surface that instead of a usable message.
+        """
+        base = self._bored_block()
+        cutter_obj, cut = api.build_thread(self.doc, base,
+                                           self._bore_face(base, 3.4))
+        cutter_obj.Shape = Part.Shape()
+        # purgeTouched, and NO recompute. Recomputing simply re-runs
+        # execute() and rebuilds a perfectly good shape, so the guard under
+        # test never sees a null one; and assigning Shape leaves the object
+        # Touched, which would trip the State check first and mask it.
+        cutter_obj.purgeTouched()
+        self.assertTrue(cutter_obj.Shape.isNull(), "fixture is not null")
+        with self.assertRaises(api.ThreadError) as ctx:
+            api._validate(cutter_obj, cut)
+        self.assertIn("cutter did not build", str(ctx.exception))
 
     def test_overrides_survive_regardless_of_dict_order(self):
         """Regression: create_thread applied params in whatever order the
@@ -768,45 +851,153 @@ class TestCreateThread(unittest.TestCase):
             "no thread material found near the far end (z=%.3f of [%.3f, "
             "%.3f])" % (z1 - margin, z0, z1))
 
-    def test_reversed_stays_on_the_part(self):
-        """Regression: a one-pitch (rather than half-height) offset keeps
-        the sweep anchored at one point instead of centred on it, so
-        reversing it walks the cutter off the part instead of merely
-        flipping its sweep direction in place.
+    def test_abort_alone_does_not_remove_what_build_thread_created(self):
+        """WHY the panel's Cancel calls discard() and not just abort.
+
+        abortTransaction is widely assumed to undo object creation. Measured
+        here it does NOT, at least once a recompute has run inside the
+        transaction: both objects were still in the tree afterwards. Cancel
+        relying on abort alone would leave an orphaned cutter and a Part::Cut
+        swallowing the user's part every time.
         """
-        base_fwd = self._bored_block()
-        face_fwd = self._bore_face(base_fwd, 3.4)
-        circle = selection.resolve(base_fwd, face_fwd)
-        z0, z1 = self._face_z_range(base_fwd, face_fwd, circle.axis)
-        cutter_fwd = api.create_thread(self.doc, base_fwd, face_fwd)[0]
-        forward_box = cutter_fwd.Shape.optimalBoundingBox()
+        base = self._bored_block()
+        face = self._bore_face(base, 3.4)
+        self.doc.openTransaction("outer")
+        cutter_obj, cut = api.build_thread(self.doc, base, face)
+        names = (cutter_obj.Name, cut.Name)
+        self.doc.abortTransaction()
+        self.doc.recompute()
+        survived = [n for n in names
+                    if n in [o.Name for o in self.doc.Objects]]
+        self.assertTrue(
+            survived,
+            "abortTransaction now cleans up on its own -- if that is "
+            "reliably true, api.discard could be simplified; verify first")
 
-        base_rev = self._bored_block()
-        face_rev = self._bore_face(base_rev, 3.4)
-        cutter_rev = api.create_thread(
-            self.doc, base_rev, face_rev, {"Reversed": True})[0]
-        reversed_box = cutter_rev.Shape.optimalBoundingBox()
+        # ...and discard finishes the job.
+        api.discard(self.doc, cut, cutter_obj)
+        remaining = [o.Name for o in self.doc.Objects]
+        for name in names:
+            self.assertNotIn(name, remaining)
 
-        self.assertAlmostEqual(forward_box.ZMin, reversed_box.ZMin, places=3)
-        self.assertAlmostEqual(forward_box.ZMax, reversed_box.ZMax, places=3)
-        self.assertLessEqual(forward_box.ZMin, z0 + 1e-6,
-                             "forward cutter does not reach the near end")
-        self.assertGreaterEqual(forward_box.ZMax, z1 - 1e-6,
-                                "forward cutter does not reach the far end")
-        self.assertLessEqual(reversed_box.ZMin, z0 + 1e-6,
-                             "reversed cutter walked off the near end")
-        self.assertGreaterEqual(reversed_box.ZMax, z1 - 1e-6,
-                                "reversed cutter walked off the far end")
-        # Matching envelopes are also what a no-op Reversed would produce --
-        # this positively confirms the 180-about-X branch actually ran,
-        # rather than merely checking an outcome a no-op would satisfy too
-        # (the sibling unit test, test_reversed_keeps_the_sweep_centred_on_
-        # the_anchor, caught this gap in feature.py directly; this is the
-        # same check through the AttachedTo/api.py path).
-        self.assertAlmostEqual(cutter_fwd.Placement.Rotation.Angle, 0.0,
-                               places=6)
-        self.assertAlmostEqual(cutter_rev.Placement.Rotation.Angle, math.pi,
-                               places=6)
+    def test_build_thread_reports_what_it_created_on_failure(self):
+        """`created` must list the cutter even when the build blows up
+        afterwards, or the caller cannot clean up precisely."""
+        base = self._bored_block()
+        face = self._bore_face(base, 3.4)
+        created = []
+        with self.assertRaises(Exception):
+            # A pitch far larger than the bore cannot produce a profile.
+            api.build_thread(self.doc, base, face,
+                             {"Pitch": 500.0}, created)
+        self.assertTrue(created, "created list left empty after a failure")
+        # Names must be read BEFORE discarding: touching .Name on a removed
+        # object raises ReferenceError, not a miss.
+        names = [obj.Name for obj in created]
+        api.discard(self.doc, *reversed(created))
+        remaining = [o.Name for o in self.doc.Objects]
+        for name in names:
+            self.assertNotIn(name, remaining)
+
+    def test_update_thread_reparameterises_in_place(self):
+        """The preview must reuse its objects, not recreate them."""
+        base = self._bored_block()
+        face = self._bore_face(base, 3.4)
+        cutter_obj, cut = api.build_thread(self.doc, base, face,
+                                           {"Length": 4.0})
+        before = (cutter_obj.Name, cut.Name)
+        volume = cutter_obj.Shape.Volume
+        count = len(self.doc.Objects)
+
+        api.update_thread(cutter_obj, cut, {"Length": 8.0})
+
+        self.assertEqual((cutter_obj.Name, cut.Name), before,
+                         "update replaced the objects instead of editing")
+        self.assertEqual(len(self.doc.Objects), count,
+                         "update leaked an object")
+        self.assertGreater(cutter_obj.Shape.Volume, volume)
+        self.assertEqual(len(cut.Shape.Solids), 1)
+
+    def test_update_thread_raises_rather_than_leaving_a_null_shape(self):
+        base = self._bored_block()
+        face = self._bore_face(base, 3.4)
+        cutter_obj, cut = api.build_thread(self.doc, base, face)
+        with self.assertRaises(Exception):
+            api.update_thread(cutter_obj, cut, {"Pitch": 500.0})
+
+    def test_apply_params_sets_structural_keys_first(self):
+        """A preset-driven key must not clobber an explicit override.
+
+        ThreadForm/Pitch/Mode all re-run the preset, which rewrites
+        Angle/RootLand/CrestLand -- so a dict that happens to iterate with
+        Pitch last used to silently discard an explicit Angle.
+        """
+        base = self._bored_block()
+        face = self._bore_face(base, 3.4)
+        cutter_obj, _cut = api.build_thread(self.doc, base, face)
+        api.apply_params(cutter_obj, {
+            "Angle": 70.0, "ThreadForm": form.CUSTOM, "Pitch": 2.0,
+            "RootLand": 0.3, "CrestLand": 0.35})
+        self.assertAlmostEqual(cutter_obj.Angle.Value, 70.0, places=6)
+        self.assertAlmostEqual(cutter_obj.RootLand.Value, 0.3, places=6)
+        self.assertAlmostEqual(cutter_obj.CrestLand.Value, 0.35, places=6)
+
+    def test_both_ways_covers_a_whole_bore_face(self):
+        """Regression: a one-pitch (rather than centred) offset anchors the
+        sweep at one point instead of straddling it, leaving half the bore
+        unthreaded and sending the rest of the cutter past the far face.
+
+        This is why BOTH remains the default: for a cylindrical FACE
+        selection, where the anchor is the face's own midpoint and Length is
+        the face's length, straddling is exactly right.
+        """
+        base = self._bored_block()
+        face = self._bore_face(base, 3.4)
+        circle = selection.resolve(base, face)
+        z0, z1 = self._face_z_range(base, face, circle.axis)
+        cutter_obj = api.create_thread(self.doc, base, face)[0]
+        box = cutter_obj.Shape.optimalBoundingBox()
+
+        self.assertLessEqual(box.ZMin, z0 + 1e-6,
+                             "cutter does not reach the near end")
+        self.assertGreaterEqual(box.ZMax, z1 - 1e-6,
+                                "cutter does not reach the far end")
+
+    def test_one_way_directions_stay_on_their_own_side(self):
+        """The point of Direction, checked through the real api path.
+
+        FORWARD must put no cutter below the anchor and REVERSE none above
+        it -- otherwise it is still cutting both ways from the profile.
+        """
+        for direction, expect in ((form.FORWARD, "above"),
+                                  (form.REVERSE, "below")):
+            base = self._bored_block()
+            face = self._bore_face(base, 3.4)
+            circle = selection.resolve(base, face)
+            anchor = circle.centre.z
+            cutter_obj = api.create_thread(
+                self.doc, base, face, {"Direction": direction,
+                                       "Length": 4.0})[0]
+            box = cutter_obj.Shape.optimalBoundingBox()
+            pitch = cutter_obj.Pitch.Value
+            # Allow the pitch of sweep overrun that a free end legitimately
+            # carries past the run itself.
+            if expect == "above":
+                self.assertGreaterEqual(box.ZMin, anchor - pitch - 1e-6,
+                                        "FORWARD reached below the anchor")
+            else:
+                self.assertLessEqual(box.ZMax, anchor + pitch + 1e-6,
+                                     "REVERSE reached above the anchor")
+
+    def test_every_direction_places_by_translation_alone(self):
+        for direction in form.DIRECTIONS:
+            base = self._bored_block()
+            face = self._bore_face(base, 3.4)
+            cutter_obj = api.create_thread(
+                self.doc, base, face, {"Direction": direction})[0]
+            self.assertAlmostEqual(
+                cutter_obj.Placement.Rotation.Angle, 0.0, places=6,
+                msg="direction %s introduced a rotation" % direction)
 
 
 if __name__ == "__main__":

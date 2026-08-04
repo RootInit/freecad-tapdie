@@ -8,7 +8,7 @@ import Part
 from . import form
 
 Circle = collections.namedtuple(
-    "Circle", ["centre", "axis", "radius", "mode", "length"])
+    "Circle", ["centre", "axis", "radius", "mode", "length", "direction"])
 
 # Probe offsets, tried largest first, so a thin wall still gets an answer.
 PROBE_FRACTIONS = (0.05, 0.01, 0.002)
@@ -117,6 +117,46 @@ def detect_mode(solid, centre, axis, radius):
         "no material on either side of the selected circle; set Mode by hand")
 
 
+def _radial_unit(axis):
+    ref = App.Vector(1, 0, 0)
+    if abs(ref.dot(axis)) > 0.9:
+        ref = App.Vector(0, 1, 0)
+    radial = ref.cross(axis)
+    radial.normalize()
+    return radial
+
+
+def detect_direction(solid, centre, axis, radius, mode):
+    """Which way along the axis the material lies from this circle.
+
+    Only meaningful for an EDGE selection, where the circle sits at one end
+    of the feature and cutting both ways would put half the cutter in open
+    air.  A cylindrical FACE already spans its own run, so resolve() reports
+    BOTH for one without probing.
+
+    Probes just inside the wall -- radius - eps for a shaft, radius + eps for
+    a bore -- one step each way along the axis.  Returns None when both sides
+    or neither has material, so the caller can fall back rather than guess.
+    """
+    radial = _radial_unit(axis)
+    for fraction in PROBE_FRACTIONS:
+        eps = max(radius * fraction, MIN_PROBE)
+        wall = radius - eps if mode == form.EXTERNAL else radius + eps
+        base = centre + radial * wall
+        # checkFace=True for the same reason detect_mode needs it: a probe
+        # that lands on a flat end face otherwise reads False on both sides
+        # and gives no signal at all.
+        ahead = solid.isInside(base + axis * eps, 1e-7, True)
+        behind = solid.isInside(base - axis * eps, 1e-7, True)
+        if ahead and not behind:
+            return form.FORWARD
+        if behind and not ahead:
+            return form.REVERSE
+        if ahead and behind:
+            return None      # mid-feature: a smaller probe will not help
+    return None
+
+
 def resolve(obj, sub_name):
     """Resolve (object, subelement name) to a Circle.
 
@@ -127,9 +167,14 @@ def resolve(obj, sub_name):
     if sub_name.startswith("Face"):
         face = _element(shape, sub_name)
         centre, axis, radius, length = _from_face(face)
+        # A cylindrical face IS the run: its own midpoint is the anchor and
+        # its own length the extent, so straddling is exactly right and no
+        # probe is needed.
+        from_edge = False
     elif sub_name.startswith("Edge"):
         edge = _element(shape, sub_name)
         centre, axis, radius, length = _from_edge(edge, shape)
+        from_edge = True
     else:
         raise SelectionError(
             "select a cylindrical face or a circular edge, not %s" % sub_name)
@@ -142,5 +187,16 @@ def resolve(obj, sub_name):
     except AmbiguousMode:
         mode = None
 
+    direction = form.BOTH
+    if from_edge:
+        # An edge sits at ONE end of the feature, and _from_edge reports the
+        # whole solid's axial span as the length -- so straddling would put
+        # half a full-length run in open air and thread only half the part.
+        # Fall back to BOTH only when the probe cannot tell.
+        detected = None
+        if mode is not None:
+            detected = detect_direction(shape, centre, axis, radius, mode)
+        direction = detected or form.BOTH
+
     return Circle(centre=centre, axis=axis, radius=radius, mode=mode,
-                  length=length)
+                  length=length, direction=direction)

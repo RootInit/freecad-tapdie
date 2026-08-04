@@ -20,6 +20,36 @@ CUSTOM = "Custom"
 
 FORMS = (PRINTED, ISO, CUSTOM)
 
+# Which way the threaded run travels from the selected circle.
+BOTH = "Both ways"
+FORWARD = "Along axis"
+REVERSE = "Against axis"
+
+DIRECTIONS = (BOTH, FORWARD, REVERSE)
+
+
+def span(direction, length):
+    """Axial extent of the threaded run, in coordinates centred on the
+    selected circle, as (z_lo, z_hi).
+
+    The anchor is the selected circle itself -- for a face that is its
+    midpoint, for an edge it is the edge.  BOTH straddles it, which is right
+    for a cylindrical face (the run covers the whole face) and wrong for a
+    circular edge at the end of a rod, where half the cutter ends up in open
+    air.  That is what FORWARD and REVERSE are for.
+    """
+    if direction not in DIRECTIONS:
+        raise ProfileError(
+            "direction %r is not one of %s"
+            % (direction, ", ".join(DIRECTIONS)))
+    if length <= 0.0:
+        raise ProfileError("threaded length must be positive")
+    if direction == FORWARD:
+        return 0.0, length
+    if direction == REVERSE:
+        return -length, 0.0
+    return -length / 2.0, length / 2.0
+
 
 class ProfileError(Exception):
     """The requested parameters cannot produce a sweepable cutter."""

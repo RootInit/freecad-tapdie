@@ -23,6 +23,11 @@ END_PROBE_FRACTIONS = (0.05, 0.01)
 MIN_END_PROBE = 1e-3
 
 
+def feature_span(obj):
+    """(z_lo, z_hi) of the threaded run in the anchor's own coordinates."""
+    return form.span(obj.Direction, obj.Length.Value)
+
+
 def _end_is_free(base_shape, anchor, surface_radius, pitch, z_edge, sign):
     """True if no material sits just past one end of the threaded run.
 
@@ -53,11 +58,13 @@ def _end_is_free(base_shape, anchor, surface_radius, pitch, z_edge, sign):
 
 def _detect_free_ends(obj):
     """Per end of the threaded run: free (open space) or abutting (adjacent
-    material)?  Returns (near_free, far_free) in the CUTTER's own builder
-    frame (the low/high z ends of the [0, height] sweep) -- NOT "physically
-    left/right": Reversed can flip which physical end that is, but this
-    function works from obj.AttachedTo/obj.LocalPlacement, neither of which
-    encodes Reversed, so its result is unaffected by it.
+    material)?  Returns (near_free, far_free) for the low/high z ends of the
+    run, in the anchor's coordinates.
+
+    Since the sweep is now placed by translation only -- Direction chooses
+    WHERE the run sits, and no longer by the 180 degree rotation the old
+    Reversed used -- the cutter's builder-frame low end always maps to the
+    run's low end, so "near" and "far" mean the same thing in both frames.
 
     No base to check against -- an unattached ThreadCutter, which is how
     most of this module's own unit tests build one -- keeps today's
@@ -77,12 +84,12 @@ def _detect_free_ends(obj):
     anchor = base.Placement.multiply(obj.LocalPlacement)
     surface_radius = obj.SurfaceRadius.Value
     pitch = obj.Pitch.Value
-    half_length = obj.Length.Value / 2.0
+    z_lo, z_hi = feature_span(obj)
 
     near_free = _end_is_free(base_shape, anchor, surface_radius, pitch,
-                             -half_length, -1)
+                             z_lo, -1)
     far_free = _end_is_free(base_shape, anchor, surface_radius, pitch,
-                            half_length, 1)
+                            z_hi, 1)
     return near_free, far_free
 
 
@@ -150,10 +157,14 @@ class ThreadCutter(object):
         if not hasattr(obj, "LeftHanded"):
             p("App::PropertyBool", "LeftHanded", "Thread", "Left-hand thread")
             obj.LeftHanded = False
-        if not hasattr(obj, "Reversed"):
-            p("App::PropertyBool", "Reversed", "Extent",
-              "Run the thread the other way along the axis from the selection")
-            obj.Reversed = False
+        if not hasattr(obj, "Direction"):
+            p("App::PropertyEnumeration", "Direction", "Extent",
+              "Which way the run travels from the selected circle. 'Both "
+              "ways' straddles it -- right for a cylindrical face, wrong for "
+              "an edge at the end of a rod, where half the cutter lands in "
+              "open air")
+            obj.Direction = list(form.DIRECTIONS)
+            obj.Direction = form.BOTH
         if not hasattr(obj, "AttachedTo"):
             p("App::PropertyLink", "AttachedTo", "Base",
               "Part this cutter follows, so the thread stays with it when it "
@@ -219,7 +230,6 @@ class ThreadCutter(object):
         pitch_v = obj.Pitch.Value
         length_v = obj.Length.Value
         height = length_v + 2.0 * pitch_v
-        half = height / 2.0
         shape = cutter.build(points, pitch_v, height,
                              left_handed=obj.LeftHanded)
 
@@ -316,29 +326,33 @@ class ThreadCutter(object):
         # true extent). Folding the same offset into Placement instead keeps
         # the shape's own geometry -- and its exact Part::GeomPlane end caps
         # -- untouched.
-        # Centre the sweep on LocalPlacement/AttachedTo rather than shifting
-        # it by a single pitch.  The anchor api.py binds here is the
-        # SELECTED FACE'S MIDPOINT (selection.py computes it that way on
-        # purpose -- see Task 5), not one end of it, so a one-pitch offset
-        # left the sweep starting at the anchor and running the full Length
-        # from there: half the bore got no thread at all, and the far half
-        # of the cutter sailed past the part's other face doing nothing.
-        # Shifting by half the total swept height instead centres the run
-        # on the anchor, so it reaches both ends symmetrically.  This is
-        # also what keeps Reversed from walking the cutter off the part:
-        # the 180-about-X rotation flips the sweep direction but must still
-        # land on the same centred span, or a reversed cutter bound to a
-        # real part would miss it entirely.
-        if obj.Reversed:
-            # 180 about X is a PROPER rotation, so the helix keeps its
-            # handedness while running the other way along the axis.
-            # Rotating the translation carries -half through to +half,
-            # which is why the sign flips relative to the forward case.
-            offset = App.Placement(App.Vector(0, 0, half),
-                                   App.Rotation(App.Vector(1, 0, 0), 180.0))
-        else:
-            offset = App.Placement(App.Vector(0, 0, -half),
-                                   App.Rotation())
+        # Place the run where Direction says, by TRANSLATION ONLY.
+        #
+        # The sweep occupies builder z in [0, height], and its nominal
+        # threaded run -- excluding the pitch of overrun at each end -- is
+        # [pitch, pitch + Length].  Shifting by -(pitch - z_lo) lands that
+        # run on [z_lo, z_hi] in the anchor's coordinates, whatever
+        # form.span() chose:
+        #
+        #     Both ways   [-L/2, +L/2]   straddles the selected circle
+        #     Along axis  [0, +L]        starts at it, runs +axis
+        #     Against     [-L, 0]        ends at it, runs -axis
+        #
+        # Getting the anchor wrong here has bitten before: the anchor api.py
+        # binds is the SELECTED FACE'S MIDPOINT (selection.py computes it
+        # that way on purpose -- see Task 5), not one end of it, so an early
+        # version that shifted by a single pitch left half the bore unthreaded
+        # and sent the rest of the cutter past the part's far face.
+        #
+        # The old Reversed used a 180-about-X rotation to run the other way
+        # while staying on the same centred span. Direction supersedes it and
+        # needs no rotation at all -- which is a real simplification, because
+        # that rotation also flipped which physical end the builder frame's
+        # "near" end meant, and _detect_free_ends had to carry a paragraph
+        # explaining why it was nonetheless unaffected.
+        z_lo, _z_hi = form.span(obj.Direction, length_v)
+        offset = App.Placement(App.Vector(0, 0, z_lo - pitch_v),
+                               App.Rotation())
 
         obj.Shape = shape        # untransformed
 
