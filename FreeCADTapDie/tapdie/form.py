@@ -33,6 +33,19 @@ DIRECTIONS = (BOTH, FORWARD, REVERSE)
 # rounding in a hand-entered radius no longer conjures a relief shell.
 MIN_RELIEF = 1e-3
 
+# Radial shortfall below which adding material is not worth doing, in mm.
+# One extrusion width: a sleeve or liner thinner than that cannot be laid
+# down as its own perimeter, so the slicer merges it into the wall it sits
+# on and the print comes out the same either way -- while the document gains
+# a Part::Fuse, an extra object and a hidden original for nothing.
+#
+# It matters because the commonest case in the world lands just under it: a
+# standard 6.8mm ISO tap drill is 0.098mm wider in the radius than the
+# printed form wants for an exact M8, so without this every ordinary tapped
+# hole grew a liner. (presets.NOZZLE is the same 0.4mm; it cannot be
+# imported here, because presets imports this module.)
+MIN_FILL = 0.4
+
 
 def span(direction, length):
     """Axial extent of the threaded run, in coordinates centred on the
@@ -259,7 +272,7 @@ def required_surface_radius(mode, diameter, pitch, angle, root_land,
 
 
 def fill_thickness(mode, diameter, pitch, angle, root_land, crest_land,
-                   clearance, surface_radius):
+                   clearance, surface_radius, minimum=None):
     """Radial thickness of material that must be ADDED to reach `diameter`.
 
     Zero whenever cutting alone can get there -- a thread smaller than the
@@ -271,15 +284,22 @@ def fill_thickness(mode, diameter, pitch, angle, root_land, crest_land,
 
     Fusing that on first is what lets Diameter work in both directions
     instead of clamping to whatever the blank happened to be.
+
+    Anything thinner than `minimum` (MIN_FILL by default, one extrusion
+    width) reads as zero: too little to be worth a boolean and an extra
+    object, and too little for a printer to lay down as its own perimeter
+    anyway. Pass minimum=0.0 to ask what the shortfall really is, which is
+    what api.diameter_note does to tell a negligible one from a real one.
     """
     _check_mode(mode)
+    minimum = MIN_FILL if minimum is None else minimum
     required = required_surface_radius(mode, diameter, pitch, angle,
                                        root_land, crest_land, clearance)
-    if abs(required - surface_radius) < MIN_RELIEF:
-        return 0.0
     if mode == EXTERNAL:
-        return max(0.0, required - surface_radius)
-    return max(0.0, surface_radius - required)
+        thickness = max(0.0, required - surface_radius)
+    else:
+        thickness = max(0.0, surface_radius - required)
+    return thickness if thickness >= minimum else 0.0
 
 
 def effective_surface_radius(mode, diameter, pitch, angle, root_land,

@@ -1327,6 +1327,60 @@ class TestAddMaterialWhenNeeded(unittest.TestCase):
         self.assertEqual([o for o in created if o.TypeId == "Part::Fuse"], [])
         self.assertIsNotNone(api.diameter_note(cutter_obj))
 
+    def test_a_standard_tap_drill_needs_no_fill_at_all(self):
+        """The commonest selection in the world must not gain a boolean.
+
+        A 6.8mm ISO drill lands within a micron of what the printed form
+        wants for an exact M8, so there is nothing to add and nothing to
+        report -- but a thin liner used to appear here anyway.
+        """
+        block, sub = self._bored_block(bore=3.4, outer=12.0)
+        created = []
+        cutter_obj, cut = api.build_thread(
+            self.doc, block, sub,
+            {"Diameter": 8.0, "Pitch": 1.25, "Length": 10.0}, created)
+        self.assertEqual(feature.fill_needed(cutter_obj), 0.0)
+        self.assertEqual([o for o in created if o.TypeId == "Part::Fuse"], [],
+                         "an ordinary tapped hole gained a fuse")
+        self.assertIsNone(api.diameter_note(cutter_obj),
+                          "and it must not be nagged about either")
+        self.assertEqual(cut.Base.Name, block.Name)
+
+    def test_a_shortfall_thinner_than_an_extrusion_is_not_worth_adding(self):
+        """0.1mm of sleeve cannot be laid down as its own perimeter, so the
+        print comes out the same and the document stays clean."""
+        shaft, sub = self._shaft(radius=4.0)
+        created = []
+        cutter_obj, _cut = api.build_thread(
+            self.doc, shaft, sub,
+            {"Diameter": 8.2, "Pitch": 1.25, "Length": 10.0}, created)
+        raw = feature.fill_needed(cutter_obj, minimum=0.0)
+        self.assertGreater(raw, 0.0, "fixture: there should be a shortfall")
+        self.assertLess(raw, form.MIN_FILL)
+        self.assertEqual(feature.fill_needed(cutter_obj), 0.0)
+        self.assertEqual([o for o in created if o.TypeId == "Part::Fuse"], [])
+
+    def test_but_a_real_mismatch_is_still_reported(self):
+        """The suppression must not become a way to hide errors. 0.35mm is
+        under the fill threshold and still 0.70mm of diameter -- worth
+        saying, even though it is not worth a sleeve."""
+        block, sub = self._bored_block(bore=3.75, outer=12.0)
+        cutter_obj, _cut = api.build_thread(
+            self.doc, block, sub,
+            {"Diameter": 8.0, "Pitch": 1.25, "Length": 10.0})
+        self.assertEqual(feature.fill_needed(cutter_obj), 0.0)
+        note = api.diameter_note(cutter_obj)
+        self.assertIsNotNone(note, "a 0.70mm error went unmentioned")
+        self.assertIn("8.70", note)
+
+    def test_a_shortfall_worth_adding_still_gets_its_material(self):
+        shaft, sub = self._shaft(radius=4.0)
+        cutter_obj, _cut = api.build_thread(
+            self.doc, shaft, sub,
+            {"Diameter": 12.0, "Pitch": 1.75, "Length": 10.0})
+        self.assertGreaterEqual(feature.fill_needed(cutter_obj),
+                                form.MIN_FILL)
+
     def test_the_fill_tube_stops_just_short_of_the_cutter(self):
         """It must cover the run, but NOT end flush with the cutter.
 

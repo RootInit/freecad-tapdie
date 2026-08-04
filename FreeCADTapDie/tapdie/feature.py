@@ -49,7 +49,7 @@ def keep_range(obj):
     return lo, hi, height
 
 
-def fill_needed(obj):
+def fill_needed(obj, minimum=None):
     """Radial thickness of material this thread needs fused on first.
 
     Zero without a base to fuse to. An unattached cutter -- which is how most
@@ -64,7 +64,7 @@ def fill_needed(obj):
     return form.fill_thickness(
         obj.Mode, obj.Diameter.Value, obj.Pitch.Value, obj.Angle.Value,
         obj.RootLand.Value, obj.CrestLand.Value, obj.Clearance.Value,
-        obj.SurfaceRadius.Value)
+        obj.SurfaceRadius.Value, minimum)
 
 
 def _end_is_free(base_shape, anchor, surface_radius, pitch, z_edge, sign):

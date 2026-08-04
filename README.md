@@ -82,8 +82,11 @@ handedness, and whether material may be added.
   tube is fused on first — a sleeve around the shaft, or a liner inside the
   bore — and then the ordinary cutter works on the result. So an M12 thread
   will happily go on an 8 mm shaft. Nothing is added when cutting alone can
-  reach the size, and the dialog tells you before OK does it. Turn it off and
-  those cases fall back to the blank and say so instead.
+  reach the size, nor when the shortfall is under one extrusion width — a
+  sleeve thinner than that cannot be laid down as its own perimeter, so it
+  would cost a boolean and an extra object to change nothing in the print.
+  The dialog tells you before OK does it. Turn it off and those cases fall
+  back to the blank and say so instead.
 - **Form → Custom** unlocks the included angle and both land widths. On a
   preset they are computed from form, pitch and mode, and shown greyed.
 - **One Ctrl-Z removes the whole thread** — the cutter and the boolean — and
