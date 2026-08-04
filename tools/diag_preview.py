@@ -377,9 +377,24 @@ panel5, _c5 = panel_for(doc5, base5, sub5)
 check("a 20mm shaft defaults to a matching diameter, quietly",
       "cuts a" not in panel5.note.text(), panel5.note.text())
 panel5.diameter.setValue(16.0)
-guarded("Refresh with a mismatched diameter", panel5._rebuild)
-check("asking for 16 on a 20mm shaft says so",
-      "20.00" in panel5.note.text() and "16.00" in panel5.note.text(),
+guarded("Refresh with a smaller diameter", panel5._rebuild)
+# Diameter DRIVES the size now: a die turns the shaft down as it cuts, so
+# asking for 16 on a 20mm shaft is achievable and must simply be done,
+# quietly. Only the direction that would need material ADDED is reported.
+check("asking for 16 on a 20mm shaft builds", panel5.preview_ok,
+      panel5.note.text())
+check("an achievable smaller diameter is not nagged about",
+      "This cuts a" not in panel5.note.text(), panel5.note.text())
+if panel5.preview_ok:
+    check("the cutter reaches out past the shaft to turn it down",
+          max(panel5.cutter_obj.Shape.optimalBoundingBox().XMax,
+              panel5.cutter_obj.Shape.optimalBoundingBox().YMax) >= 10.0,
+          "reach=%.3f" % panel5.cutter_obj.Shape.optimalBoundingBox().XMax)
+panel5.diameter.setValue(24.0)
+guarded("Refresh with an impossible diameter", panel5._rebuild)
+check("asking for 24 on a 20mm shaft says it cannot",
+      "24.00" in panel5.note.text() and "20.00" in panel5.note.text()
+      and "removes material" in panel5.note.text(),
       panel5.note.text())
 guarded("reject() the diameter panel", panel5.reject)
 

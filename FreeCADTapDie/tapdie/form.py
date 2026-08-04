@@ -27,6 +27,12 @@ REVERSE = "Against axis"
 
 DIRECTIONS = (BOTH, FORWARD, REVERSE)
 
+# Radial difference below which a blank counts as already the right size, in
+# mm. One micron: four hundred times finer than the 0.4mm extrusion width
+# that floors every other feature here, so nothing real is lost, while
+# rounding in a hand-entered radius no longer conjures a relief shell.
+MIN_RELIEF = 1e-3
+
 
 def span(direction, length):
     """Axial extent of the threaded run, in coordinates centred on the
@@ -86,11 +92,16 @@ def radial_offset(clearance, angle):
     return clearance / _sin(angle)
 
 
-def _check_enums(mode, form_name):
-    """Validate mode and form_name enums."""
+def _check_mode(mode):
+    """Validate the mode enum.  Inlined identically in four places before."""
     if mode not in (INTERNAL, EXTERNAL):
         raise ProfileError(
             "mode %r is not %s or %s" % (mode, INTERNAL, EXTERNAL))
+
+
+def _check_enums(mode, form_name):
+    """Validate mode and form_name enums."""
+    _check_mode(mode)
     if form_name not in FORMS:
         raise ProfileError(
             "form %r is not one of %s" % (form_name, ", ".join(FORMS)))
@@ -155,9 +166,7 @@ def crest_radius(mode, surface_radius, clearance, angle):
     value: 0.34mm of land for a 0.12mm gap, which is more crest than any
     pitch below M8 has to give. Do not reintroduce it.
     """
-    if mode not in (INTERNAL, EXTERNAL):
-        raise ProfileError(
-            "mode %r is not %s or %s" % (mode, INTERNAL, EXTERNAL))
+    _check_mode(mode)
     offset = radial_offset(clearance, angle)
     if mode == EXTERNAL:
         return surface_radius - offset      # shave the shaft
@@ -182,14 +191,60 @@ def required_surface_radius(mode, diameter, pitch, angle, root_land,
         For a 90 degree printed form this is a far larger hole than the ISO
         60 degree tap drill of the same nominal size.
     """
-    if mode not in (INTERNAL, EXTERNAL):
-        raise ProfileError(
-            "mode %r is not %s or %s" % (mode, INTERNAL, EXTERNAL))
+    _check_mode(mode)
     if mode == EXTERNAL:
         return diameter / 2.0
     return (diameter / 2.0
             - cut_depth(pitch, angle, root_land, crest_land)
             - 2.0 * radial_offset(clearance, angle))
+
+
+def effective_surface_radius(mode, diameter, pitch, angle, root_land,
+                             crest_land, clearance, surface_radius):
+    """Radius the profile is anchored on once `Diameter` is honoured.
+
+    `Diameter` is not a label: it drives the size, and the cutter reaches
+    further to reach it.  A real die reduces the shaft as it cuts and a real
+    tap opens the bore, so the achievable direction is one-way in each mode:
+
+      * EXTERNAL -- can only cut a thread SMALLER than the shaft.  The relief
+        shell turns the blank down to the requested major diameter first, and
+        the profile is anchored there.  Asking for a thread LARGER than the
+        shaft would need material added, which no cutting tool can do.
+      * INTERNAL -- can only cut a thread LARGER than the bore.  The relief
+        opens the hole out to what the requested major needs, then the
+        profile is anchored there.  Asking for one SMALLER than the bore
+        would, again, need material added.
+
+    The unachievable direction CLAMPS to the blank rather than raising, and
+    the caller reports it (api.diameter_note).  Refusing outright was tried
+    and is far too strict to live with: an M8 thread in a standard 6.8mm ISO
+    tap-drilled bore wants 6.52mm on the printed form, so the drill is
+    legitimately 0.28mm too big and every ordinary tapped hole in the test
+    suite failed to build. Clamping degrades to exactly the old
+    anchor-on-the-surface behaviour, which is the right thing to do when the
+    request cannot be met.
+
+    Returns the actual surface radius when the blank already matches, so the
+    ordinary case costs nothing.  cutter.crest_relief bridges whatever gap is
+    left, spanning from the real surface to the anchored crest.
+    """
+    _check_mode(mode)
+    required = required_surface_radius(mode, diameter, pitch, angle,
+                                       root_land, crest_land, clearance)
+    # A sub-micron disagreement is not a request to remove material, it is
+    # rounding. Without this, a blank written to 4 decimal places -- 3.3234
+    # against an exact 3.3234470 -- differs by 5e-5mm and grows a whole
+    # relief shell an Overrun deep, adding 186mm3 to the cutter to cut a gap
+    # no process on earth resolves. The floor for anything modelled here is
+    # one extrusion width, 0.4mm; a micron is four hundred times under that.
+    if abs(required - surface_radius) < MIN_RELIEF:
+        return surface_radius
+    if mode == EXTERNAL:
+        # Can only turn the shaft DOWN.
+        return min(required, surface_radius)
+    # Can only open the bore OUT.
+    return max(required, surface_radius)
 
 
 def achieved_diameter(mode, pitch, angle, root_land, crest_land, clearance,
@@ -205,9 +260,7 @@ def achieved_diameter(mode, pitch, angle, root_land, crest_land, clearance,
     profiles for Diameter 8.0 and 24.0, so a user threading a 20mm shaft
     could ask for 16 and get 20 with nothing said.
     """
-    if mode not in (INTERNAL, EXTERNAL):
-        raise ProfileError(
-            "mode %r is not %s or %s" % (mode, INTERNAL, EXTERNAL))
+    _check_mode(mode)
     if mode == EXTERNAL:
         # The shaft IS the major diameter; relief moves the crest inward from
         # it, which is what makes the fit a clearance one.

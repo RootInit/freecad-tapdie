@@ -265,11 +265,30 @@ class ThreadCutter(object):
         self.last_error = None
 
     def _build_shape(self, obj):
+        # DIAMETER DRIVES THE SIZE; the blank only says where to start.
+        #
+        # The profile is anchored on a surface, not on a nominal size, so
+        # asking for a thread the blank does not already suit means reaching
+        # further: a die turns the shaft down before it cuts, a tap opens the
+        # bore out. That is exactly what the crest-relief shell already does
+        # for clearance, so honouring Diameter is the same mechanism with a
+        # bigger gap to bridge. Anchor the profile at the radius the
+        # requested diameter needs, and let the relief span from the real
+        # surface to it.
+        #
+        # Only one direction is physically available in each mode -- smaller
+        # for external, larger for internal -- and effective_surface_radius
+        # raises for the other, because no cutting tool adds material.
+        surface = obj.SurfaceRadius.Value
+        anchor = form.effective_surface_radius(
+            obj.Mode, obj.Diameter.Value, obj.Pitch.Value, obj.Angle.Value,
+            obj.RootLand.Value, obj.CrestLand.Value, obj.Clearance.Value,
+            surface)
         points = form.cutter_points(
             obj.Mode, obj.ThreadForm, obj.Diameter.Value, obj.Pitch.Value,
             obj.Angle.Value, obj.RootLand.Value, obj.CrestLand.Value,
             obj.Clearance.Value,
-            obj.SurfaceRadius.Value, obj.Overrun.Value)
+            anchor, obj.Overrun.Value)
 
         # Overrun a whole pitch at each end: a groove that stops at the face
         # leaves a collar of plain surface for the mating crest to jam on.
@@ -342,11 +361,15 @@ class ThreadCutter(object):
         # out) to the crest radius over exactly the threaded run before the
         # profile's own groove is cut. Added to the same compound as
         # everything else -- Part::Cut removes every solid in the tool.
+        # The relief spans from the REAL surface to the crest the ANCHOR
+        # implies, so it removes both the clearance and whatever the
+        # requested Diameter asked for on top. With a matching blank the two
+        # radii coincide and this is the plain clearance shell as before.
         extras = []
         relief = cutter.crest_relief(
             obj.Mode,
-            obj.SurfaceRadius.Value,
-            form.crest_radius(obj.Mode, obj.SurfaceRadius.Value,
+            surface,
+            form.crest_radius(obj.Mode, anchor,
                               obj.Clearance.Value, obj.Angle.Value),
             z_keep_lo, z_keep_hi, obj.Overrun.Value)
         if relief is not None:
@@ -357,12 +380,12 @@ class ThreadCutter(object):
             reach = max(pt[0] for pt in points)
             if near_free:
                 extras.append(cutter.clip_to_axial_range(
-                    cutter.lead_in_cone(tip_radius, obj.SurfaceRadius.Value,
+                    cutter.lead_in_cone(tip_radius, anchor,
                                         feature_lo, into_material=True),
                     z_keep_lo, z_keep_hi, reach))
             if far_free:
                 extras.append(cutter.clip_to_axial_range(
-                    cutter.lead_in_cone(tip_radius, obj.SurfaceRadius.Value,
+                    cutter.lead_in_cone(tip_radius, anchor,
                                         feature_hi, into_material=False),
                     z_keep_lo, z_keep_hi, reach))
 

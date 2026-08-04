@@ -3,7 +3,11 @@
 The sweep is done by a PartDesign AdditiveHelix used as the BASE feature of a
 Body, inside a hidden scratch document.  The Body's shape is then the swept
 solid itself -- nothing to subtract, nothing to infer -- and a copy of it
-survives closing the document.
+outlives the document's contents.
+
+That scratch document is created ONCE and REUSED, never created and closed per
+build.  See _scratch_document: doing both inside a feature's execute()
+destroys the caller's open undo transaction.
 
 PartDesign is a document object type, not a GUI workbench, so none of this
 requires a GUI or an active workbench.  The obvious alternative,
@@ -29,6 +33,82 @@ class CutterError(Exception):
     """The sweep did not produce a usable solid."""
 
 
+# The one scratch document, held across builds. A list rather than a plain
+# global so it can be cleared and rebuilt without a `global` statement.
+_SCRATCH_DOC = []
+
+
+def _empty(doc):
+    """Remove everything from the scratch document.
+
+    Removing a PartDesign Body cascades to its Origin and its features, so a
+    single pass over a list captured up front can leave objects behind. Loop
+    until the document is actually empty rather than assuming one pass did it.
+    """
+    for _ in range(50):
+        if not doc.Objects:
+            return
+        for obj in list(doc.Objects):
+            try:
+                doc.removeObject(obj.Name)
+            except Exception:
+                pass
+    raise CutterError("scratch document would not empty: %s"
+                      % [o.Name for o in doc.Objects])
+
+
+def _scratch_document():
+    """An empty hidden document to sweep in, CREATED ONCE AND REUSED.
+
+    DO NOT go back to creating and closing this per build.  Creating a
+    document AND closing it inside a feature's execute() destroys the undo
+    transaction the caller has open on a DIFFERENT document: the Part::Cut
+    created after that recompute survives Ctrl-Z as a broken object whose
+    Tool is gone, and the base part is left hidden, so the user sees nothing
+    at all and cannot undo their way out of it.
+
+    Isolated by bisection (tools/probe_undo_cause.py), because the cause was
+    guessed wrong once already -- api.create_thread's docstring blamed the
+    dependency DIAMOND (the cutter links to the base while the Cut consumes
+    both), and that is measurably innocent: adding the identical diamond to a
+    minimal fixture undoes cleanly, and removing AttachedTo from the real
+    path leaves the bug exactly where it was.
+
+    What the measurements actually say:
+
+        create a document inside execute(), never close it   -> clean
+        close a document inside execute() that predates it   -> clean
+        create AND close inside execute()                    -> BROKEN
+        the same create+close done by the CALLER instead     -> clean
+        one long-lived document, reused, never closed        -> clean
+
+    So it is specifically the pair, during a recompute. `temp=True` alone does
+    not help -- measured, it still breaks.
+
+    The document is `temp` so FreeCAD never offers to save it, hidden so it
+    never appears in the tree, and UndoMode=0 so its own edits cost nothing.
+    """
+    if _SCRATCH_DOC:
+        doc = _SCRATCH_DOC[0]
+        try:
+            if doc.Name in App.listDocuments():
+                _empty(doc)
+                return doc
+        except Exception:
+            pass                      # closed underneath us; make a new one
+        del _SCRATCH_DOC[:]
+    try:
+        doc = App.newDocument(SCRATCH, hidden=True, temp=True)
+    except TypeError:                 # older FreeCAD without `temp`
+        doc = App.newDocument(SCRATCH, hidden=True)
+    try:
+        doc.UndoMode = 0
+    except Exception:
+        pass
+    _SCRATCH_DOC.append(doc)
+    return doc
+
+
 def build(points, pitch, height, left_handed=False):
     """Sweep `points` (radius, axial) into a helical solid.
 
@@ -49,8 +129,11 @@ def build(points, pitch, height, left_handed=False):
     # 'addObject'", and nothing could be deleted either. It is also what made
     # the task panel's Cancel raise on App.ActiveDocument.abortTransaction --
     # a symptom I patched at the call site before finding this cause.
+    #
+    # Still needed with a reused document: the FIRST call creates it, and
+    # creation alone is enough to steal active status.
     previous = App.ActiveDocument
-    doc = App.newDocument(SCRATCH, hidden=True)
+    doc = _scratch_document()
     try:
         body = doc.addObject("PartDesign::Body", "Cutter")
         sketch = doc.addObject("Sketcher::SketchObject", "Profile")
@@ -95,7 +178,13 @@ def build(points, pitch, height, left_handed=False):
             raise CutterError("swept cutter has no volume")
         return shape
     finally:
-        App.closeDocument(doc.Name)
+        # Empty it rather than close it -- closing is half of what breaks the
+        # caller's undo (see _scratch_document). Leaving it empty between
+        # builds also means no Body sits in memory holding a helix.
+        try:
+            _empty(doc)
+        except Exception:
+            pass          # the next acquire empties it; never mask a raise
         # Guarded: `previous` may legitimately be None (nothing was active),
         # and a caller could in principle have closed it while we worked.
         if previous is not None:

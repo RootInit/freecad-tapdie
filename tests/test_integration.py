@@ -1179,6 +1179,109 @@ class TestCreateThread(unittest.TestCase):
                 msg="direction %s introduced a rotation" % direction)
 
 
+class TestUndoRemovesTheWholeThread(unittest.TestCase):
+    """One Ctrl-Z must remove the cutter AND the boolean, and give the base
+    back.
+
+    It used to leave the Part::Cut behind with its Tool gone AND leave the
+    base hidden, so the user saw an empty viewport and could not undo out of
+    it. api.create_thread's docstring blamed the AttachedTo/Cut dependency
+    diamond; bisection showed the diamond is innocent and the real cause was
+    cutter.build creating and closing a scratch document inside execute().
+    """
+
+    def setUp(self):
+        # NOT hidden: undo is what is under test and a hidden document is a
+        # different enough animal that testing it would prove less.
+        self.doc = App.newDocument("undotest")
+        App.setActiveDocument(self.doc.Name)
+        # freecadcmd leaves UndoMode at 0, so transactions record NOTHING and
+        # UndoNames stays empty -- every assertion here would pass or fail for
+        # reasons unrelated to the bug. Turn it on explicitly rather than
+        # inheriting whatever the environment happens to do.
+        self.doc.UndoMode = 1
+
+    def tearDown(self):
+        App.closeDocument(self.doc.Name)
+
+    def _shaft(self):
+        obj = self.doc.addObject("Part::Cylinder", "Shaft")
+        obj.Radius, obj.Height = 4.0, 30.0
+        self.doc.recompute()
+        for i, f in enumerate(obj.Shape.Faces):
+            if (hasattr(f.Surface, "Radius")
+                    and abs(f.Surface.Radius - 4.0) < 1e-6):
+                return obj, "Face%d" % (i + 1)
+        raise AssertionError("no cylindrical face")
+
+    def test_one_undo_removes_both_objects(self):
+        shaft, sub = self._shaft()
+        baseline = {o.Name for o in self.doc.Objects}
+        api.create_thread(self.doc, shaft, sub)
+        self.doc.recompute()
+        stack = list(self.doc.UndoNames)
+        self.doc.undo()
+        self.doc.recompute()
+        left = sorted({o.Name for o in self.doc.Objects} - baseline)
+        # The OUTCOME is the contract, asserted first: one Ctrl-Z takes the
+        # whole thread with it. An earlier version of this test asserted the
+        # undo stack was exactly ['Thread'] before checking that, and it
+        # failed in the full suite while passing alone -- FreeCAD carries
+        # transaction state across documents within a process, so the step
+        # COUNT is a property of the whole run, not of create_thread. The
+        # count is reported here for context, never asserted.
+        self.assertEqual(left, [],
+                         "one undo left %s behind (undo stack was %s)"
+                         % (left, stack))
+
+    def test_undo_leaves_no_boolean_with_a_missing_tool(self):
+        """The specific damage: a Part::Cut whose Tool is gone."""
+        shaft, sub = self._shaft()
+        api.create_thread(self.doc, shaft, sub)
+        self.doc.recompute()
+        self.doc.undo()
+        self.doc.recompute()
+        orphans = [o.Name for o in self.doc.Objects
+                   if o.TypeId == "Part::Cut" and o.Tool is None]
+        self.assertEqual(orphans, [])
+
+    def test_undo_gives_the_base_part_back(self):
+        """Part::Cut hides its Base. Undo must unhide it, or the user is left
+        staring at an empty viewport with nothing to select."""
+        shaft, sub = self._shaft()
+        api.create_thread(self.doc, shaft, sub)
+        self.doc.recompute()
+        self.doc.undo()
+        self.doc.recompute()
+        self.assertTrue(shaft.ViewObject is None
+                        or shaft.ViewObject.Visibility,
+                        "the base part was left hidden after undo")
+
+    def test_the_scratch_document_is_reused_not_recreated(self):
+        """The fix itself: build must not create-and-close per call.
+
+        Asserted through the document list rather than by counting calls,
+        because it is the create/close PAIR that does the damage.
+        """
+        from tapdie import cutter as cutter_mod
+
+        shaft, sub = self._shaft()
+        api.create_thread(self.doc, shaft, sub)
+        first = [n for n in App.listDocuments()
+                 if n.startswith(cutter_mod.SCRATCH)]
+        self.assertEqual(len(first), 1,
+                         "expected exactly one scratch document, got %s"
+                         % first)
+        shaft2, sub2 = self._shaft()
+        api.create_thread(self.doc, shaft2, sub2)
+        second = [n for n in App.listDocuments()
+                  if n.startswith(cutter_mod.SCRATCH)]
+        self.assertEqual(second, first, "the scratch document was not reused")
+        self.assertEqual(
+            len(App.getDocument(first[0]).Objects), 0,
+            "the scratch document should be left empty between builds")
+
+
 class TestDiagnosticsAndChecks(unittest.TestCase):
     """The three things the 2026-08-04 review found reporting nothing:
     a swallowed error message, an inert Diameter, and a fixed Overrun."""
@@ -1200,6 +1303,11 @@ class TestDiagnosticsAndChecks(unittest.TestCase):
         """
         obj = feature.make_cutter(self.doc)
         obj.Mode = form.INTERNAL
+        # Diameter must be small enough that it does not ask for the bore to
+        # be opened out: it drives the anchor now, and the default 20mm would
+        # move the profile to r=8.16 where a 1mm overrun clears the axis
+        # easily and there would be no error to report.
+        obj.Diameter = 2.0
         obj.SurfaceRadius = 0.9
         obj.Overrun = 1.0
         self.doc.recompute()
@@ -1211,9 +1319,11 @@ class TestDiagnosticsAndChecks(unittest.TestCase):
     def test_a_successful_rebuild_clears_the_previous_error(self):
         obj = feature.make_cutter(self.doc)
         obj.Mode = form.INTERNAL
+        obj.Diameter = 2.0            # see the test above: Diameter anchors
         obj.SurfaceRadius = 0.9
         self.doc.recompute()
         self.assertIsNotNone(obj.Proxy.last_error)
+        obj.Diameter = 20.0
         obj.SurfaceRadius = 8.2597
         self.doc.recompute()
         self.assertIsNone(obj.Proxy.last_error)
@@ -1229,21 +1339,65 @@ class TestDiagnosticsAndChecks(unittest.TestCase):
         self.doc.recompute()
         self.assertIsNone(api.diameter_note(obj))
 
-    def test_a_mismatched_blank_says_what_it_will_actually_cut(self):
-        """Finding 1: Diameter was passed to cutter_points and never read.
+    def test_a_smaller_diameter_on_a_bigger_shaft_is_honoured(self):
+        """Diameter DRIVES the size: a die turns the shaft down as it cuts.
 
-        Measured identical profiles for Diameter 8.0 and 24.0, so a user
-        threading a 20mm shaft could ask for 16 and get 20 in silence.
+        Finding 1 was that Diameter reached cutter_points and was never read
+        -- identical profiles for 8.0 and 24.0 -- so a user threading a 20mm
+        shaft could ask for 16 and silently get 20.
         """
         obj = feature.make_cutter(self.doc)
         obj.Mode = form.EXTERNAL
+        obj.ThreadForm = form.PRINTED
+        obj.Pitch = 2.0
         obj.Diameter = 16.0
         obj.SurfaceRadius = 10.0      # a 20mm shaft
+        obj.Length = 8.0
+        self.doc.recompute()
+        self.assertNotIn("Invalid", obj.State, "did not build: %s"
+                         % obj.Proxy.last_error)
+        self.assertIsNone(api.diameter_note(obj),
+                          "an achievable request must not be reported")
+        # The cutter has to reach out past the shaft to take it down, so its
+        # own extent proves the relief is really there.
+        box = obj.Shape.optimalBoundingBox()
+        self.assertGreaterEqual(max(box.XMax, box.YMax), 10.0 - 1e-6)
+
+    def test_a_bigger_diameter_in_a_smaller_bore_is_honoured(self):
+        """The internal direction: a tap opens the hole out."""
+        obj = feature.make_cutter(self.doc)
+        obj.Mode = form.INTERNAL
+        obj.ThreadForm = form.PRINTED
+        obj.Pitch = 2.5
+        obj.Diameter = 20.0
+        obj.SurfaceRadius = 5.0       # a 10mm bore
+        obj.Length = 8.0
+        self.doc.recompute()
+        self.assertNotIn("Invalid", obj.State, "did not build: %s"
+                         % obj.Proxy.last_error)
+        self.assertIsNone(api.diameter_note(obj))
+        anchor = form.effective_surface_radius(
+            obj.Mode, obj.Diameter.Value, obj.Pitch.Value, obj.Angle.Value,
+            obj.RootLand.Value, obj.CrestLand.Value, obj.Clearance.Value,
+            obj.SurfaceRadius.Value)
+        self.assertGreater(anchor, 5.0, "the bore was not opened out")
+        box = obj.Shape.optimalBoundingBox()
+        self.assertGreaterEqual(max(box.XMax, box.YMax), anchor - 1e-6)
+
+    def test_the_impossible_direction_is_reported_not_silently_ignored(self):
+        """A thread LARGER than the shaft would need material added."""
+        obj = feature.make_cutter(self.doc)
+        obj.Mode = form.EXTERNAL
+        obj.ThreadForm = form.PRINTED
+        obj.Pitch = 2.0
+        obj.Diameter = 24.0
+        obj.SurfaceRadius = 10.0      # only a 20mm shaft to work with
         self.doc.recompute()
         note = api.diameter_note(obj)
         self.assertIsNotNone(note)
         self.assertIn("20.00", note)
-        self.assertIn("16.00", note)
+        self.assertIn("24.00", note)
+        self.assertIn("removes material", note)
 
     def test_a_tap_drilled_M8_bore_is_within_tolerance(self):
         """0.08mm of overshoot is real but must not nag on the common case.

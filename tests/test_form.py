@@ -529,5 +529,83 @@ class TestAchievedDiameter(unittest.TestCase):
         self.assertIn("Sideways", str(caught.exception))
 
 
+class TestEffectiveSurfaceRadius(unittest.TestCase):
+    """Diameter drives the size; the cutter reaches further to reach it.
+
+    A die reduces the shaft as it cuts and a tap opens the bore, so exactly
+    one direction is available in each mode. Every case is checked at 60 and
+    90 degrees, because the depth term is 1/tan(angle/2) and a single angle
+    cannot distinguish a right formula from a wrong one here either.
+    """
+
+    def test_external_can_cut_smaller_than_the_shaft(self):
+        for angle in (60.0, 90.0):
+            r = form.effective_surface_radius(
+                form.EXTERNAL, 16.0, 2.0, angle, 0.4, 0.4, 0.12, 10.0)
+            self.assertAlmostEqual(r, 8.0, places=9,
+                                   msg="angle=%s" % angle)
+
+    def test_external_larger_than_the_shaft_clamps_to_the_shaft(self):
+        """Cannot add material, so fall back to anchoring on the blank.
+
+        Clamping rather than raising is deliberate and was measured: an M8
+        thread in a standard 6.8mm ISO tap drill wants a 6.52mm bore on the
+        printed form, so the drill is legitimately too big and refusing
+        outright failed every ordinary tapped hole in the suite. The caller
+        reports the shortfall instead (api.diameter_note).
+        """
+        for angle in (60.0, 90.0):
+            r = form.effective_surface_radius(
+                form.EXTERNAL, 24.0, 2.0, angle, 0.4, 0.4, 0.12, 10.0)
+            self.assertAlmostEqual(r, 10.0, places=9, msg="angle=%s" % angle)
+
+    def test_internal_can_cut_larger_than_the_bore(self):
+        for angle in (60.0, 90.0):
+            r = form.effective_surface_radius(
+                form.INTERNAL, 20.0, 2.5, angle, 0.4, 0.4, 0.12, 5.0)
+            self.assertGreater(r, 5.0, "angle=%s" % angle)
+            # and it is exactly the radius that yields the asked-for size
+            self.assertAlmostEqual(
+                form.achieved_diameter(form.INTERNAL, 2.5, angle, 0.4, 0.4,
+                                       0.12, r),
+                20.0, places=9)
+
+    def test_internal_smaller_than_the_bore_clamps_to_the_bore(self):
+        """The common real case: an ISO tap drill is bigger than the printed
+        form wants, so this must degrade quietly rather than refuse."""
+        for angle in (60.0, 90.0):
+            r = form.effective_surface_radius(
+                form.INTERNAL, 6.0, 1.0, angle, 0.2, 0.2, 0.12, 5.0)
+            self.assertAlmostEqual(r, 5.0, places=9, msg="angle=%s" % angle)
+
+    def test_a_standard_M8_tap_drill_is_not_refused(self):
+        """The exact case that made refusing untenable: 6.8mm ISO drill."""
+        r = form.effective_surface_radius(
+            form.INTERNAL, 8.0, 1.25, 90.0, 0.225, 0.225, 0.12, 3.4)
+        self.assertAlmostEqual(r, 3.4, places=9)
+
+    def test_a_matching_blank_anchors_on_itself(self):
+        """The ordinary case must cost nothing."""
+        r = form.effective_surface_radius(
+            form.EXTERNAL, 20.0, 2.5, 90.0, 0.4, 0.4, 0.12, 10.0)
+        self.assertAlmostEqual(r, 10.0, places=9)
+
+    def test_the_anchor_always_yields_the_requested_diameter(self):
+        """Round-trip across the achievable direction in both modes."""
+        for angle in (60.0, 90.0, 120.0):
+            ext = form.effective_surface_radius(
+                form.EXTERNAL, 12.0, 1.75, angle, 0.3, 0.3, 0.12, 10.0)
+            self.assertAlmostEqual(
+                form.achieved_diameter(form.EXTERNAL, 1.75, angle, 0.3, 0.3,
+                                       0.12, ext),
+                12.0, places=9, msg="external angle=%s" % angle)
+            internal = form.effective_surface_radius(
+                form.INTERNAL, 20.0, 1.75, angle, 0.3, 0.3, 0.12, 5.0)
+            self.assertAlmostEqual(
+                form.achieved_diameter(form.INTERNAL, 1.75, angle, 0.3, 0.3,
+                                       0.12, internal),
+                20.0, places=9, msg="internal angle=%s" % angle)
+
+
 if __name__ == "__main__":
     unittest.main()

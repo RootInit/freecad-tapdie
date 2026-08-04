@@ -53,15 +53,21 @@ the thread with it.
   blind bore's floor) and faced off flat with no lead-in chamfer, so the
   sweep's overrun does not gouge into the neighbour. Free ends get a 45°
   lead-in so the first turn is not a fragile knife edge.
-- **Diameter is a check, not a driver.** The thread profile is anchored on the
-  surface you selected, so the blank decides the size. If the two disagree the
-  dialog says what it will really cut and what blank the size you asked for
-  would need — it does not silently resize anything.
+- **Diameter drives the size**, and the cutter reaches further to reach it: a
+  die turns the shaft down as it cuts, a tap opens the bore out. So you can
+  ask for an M16 thread on a Ø20 shaft, or an M20 thread in a Ø10 bore, and
+  get it. Only one direction is available in each mode, because cutting
+  removes material and cannot add it — external can go *smaller* than the
+  shaft, internal *larger* than the bore. Ask for the other and the dialog
+  says so and falls back to the blank rather than silently resizing anything.
 - **Form → Custom** unlocks the included angle and both land widths. On a
   preset they are computed from form, pitch and mode, and shown greyed.
-- **Known limitation:** one Ctrl-Z after creating a thread removes the cutter
-  but leaves the `Part::Cut` behind. Delete it by hand. Measured, not
-  theorised — see `tools/diag_undo.py`.
+- **One Ctrl-Z removes the whole thread** — the cutter and the boolean — and
+  gives you the original part back. This was not always so: it used to strand
+  the `Part::Cut` with its Tool gone *and* leave the base hidden. The cause
+  was `cutter.build` creating and closing its scratch document inside
+  `execute()`, which destroys the caller's open transaction. See
+  `tools/probe_undo_cause.py` for the bisection.
 
 ## Layout
 

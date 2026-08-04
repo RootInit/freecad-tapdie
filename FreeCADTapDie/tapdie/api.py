@@ -63,10 +63,20 @@ def diameter_note(cutter_obj):
     that check.
     """
     mode = cutter_obj.Mode
+    # Measure against the radius the cutter really anchors on, which honours
+    # Diameter wherever material can be removed to reach it. What is left is
+    # only the direction no cutting tool can do -- a thread larger than the
+    # shaft, or smaller than the bore -- so anything reported here is a
+    # request that was genuinely clamped, not a rounding difference.
+    anchor = form.effective_surface_radius(
+        mode, cutter_obj.Diameter.Value, cutter_obj.Pitch.Value,
+        cutter_obj.Angle.Value, cutter_obj.RootLand.Value,
+        cutter_obj.CrestLand.Value, cutter_obj.Clearance.Value,
+        cutter_obj.SurfaceRadius.Value)
     got = form.achieved_diameter(
         mode, cutter_obj.Pitch.Value, cutter_obj.Angle.Value,
         cutter_obj.RootLand.Value, cutter_obj.CrestLand.Value,
-        cutter_obj.Clearance.Value, cutter_obj.SurfaceRadius.Value)
+        cutter_obj.Clearance.Value, anchor)
     want = cutter_obj.Diameter.Value
     if abs(got - want) <= DIAMETER_TOLERANCE:
         return None
@@ -75,10 +85,13 @@ def diameter_note(cutter_obj):
         cutter_obj.RootLand.Value, cutter_obj.CrestLand.Value,
         cutter_obj.Clearance.Value)
     surface = "shaft" if mode == form.EXTERNAL else "bore"
-    return ("This cuts a %.2fmm thread, not %.2fmm: the selected %s is "
-            "%.2fmm, and a %.2fmm thread needs a %.2fmm one."
-            % (got, want, surface, 2.0 * cutter_obj.SurfaceRadius.Value,
-               want, needed))
+    direction = "smaller" if mode == form.EXTERNAL else "larger"
+    return ("This cuts a %.2fmm thread, not %.2fmm: a %.2fmm thread needs a "
+            "%.2fmm %s and the selected one is %.2fmm. Cutting only removes "
+            "material, so the thread can go %s than the %s but not the other "
+            "way."
+            % (got, want, want, needed, surface,
+               2.0 * cutter_obj.SurfaceRadius.Value, direction, surface))
 
 
 def local_frame(base, circle):
@@ -253,16 +266,23 @@ def create_thread(doc, base, sub_name, overrides=None):
     """Thread `base` at `sub_name`.  Returns (cutter, cut).
 
     Everything is done inside one undo transaction, so the tree shows one
-    "Thread" step rather than two unrelated additions.
+    "Thread" step rather than two unrelated additions, and ONE Ctrl-Z removes
+    the whole thread.
 
-    KNOWN LIMITATION, measured (tools/diag_undo.py): one Ctrl-Z removes the
-    cutter but leaves the Part::Cut behind, with its Tool gone. A plain
-    Part::FeaturePython plus a Part::Cut in one transaction undoes cleanly,
-    so the trigger is the DIAMOND this builds -- the cutter links to `base`
-    via AttachedTo, and the Cut consumes both `base` and the cutter. Delete
-    the leftover Cut by hand. This predates the live preview and is not
-    caused by it; the earlier version of this docstring claimed a single
-    Ctrl-Z removed both, which was never true and was never tested.
+    That last part was not always true. This docstring used to record it as a
+    known limitation -- one Ctrl-Z left the Part::Cut behind with its Tool
+    gone -- and blamed the DIAMOND this builds (the cutter links to `base`
+    via AttachedTo while the Cut consumes both). That diagnosis was wrong,
+    and wrong in the way this project keeps being wrong: a plausible mental
+    model written down as fact. Bisection (tools/probe_undo_cause.py) shows
+    the identical diamond added to a minimal fixture undoes perfectly, and
+    removing AttachedTo from this very path changes nothing.
+
+    The real cause was in cutter.build: it created AND closed a scratch
+    document inside execute(), which destroys the caller's open transaction.
+    Fixed there by reusing one long-lived document. The damage was also worse
+    than recorded -- the base part stayed hidden after the undo, so the user
+    was left with an invisible part and a broken boolean.
     """
     created = []
     doc.openTransaction("Thread")
