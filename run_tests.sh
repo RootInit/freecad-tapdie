@@ -25,6 +25,7 @@ case "${1:-all}" in
   pure)
     run_pure 'test_form.py'
     run_pure 'test_presets.py'
+    run_pure 'test_packaging.py'
     ;;
   fc)
     # Piping into grep would hand back grep's exit status, not freecadcmd's,
