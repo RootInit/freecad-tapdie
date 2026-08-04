@@ -323,11 +323,16 @@ class TestLeadInChamfer(unittest.TestCase):
 
     def test_lead_in_false_matches_the_plain_swept_geometry(self):
         # LeadIn=False must reproduce exactly the geometry cutter.build()
-        # alone would produce -- i.e. today's pre-lead-in behaviour,
-        # unchanged.
+        # alone would produce. Clearance is forced to zero because it is
+        # applied RADIALLY now: a nonzero value adds a crest-relief shell to
+        # the cutter compound, which is real material to remove and not part
+        # of the swept helix. Comparing against the bare sweep with clearance
+        # left on measured 496 against 255 -- the relief, not a defect.
         from tapdie import cutter as cutter_mod
 
         obj = self._iso_cutter(mode=form.INTERNAL, lead_in=False)
+        obj.Clearance = 0.0
+        obj.Document.recompute()
         points = form.cutter_points(
             obj.Mode, obj.ThreadForm, obj.Diameter.Value, obj.Pitch.Value,
             obj.Angle.Value, obj.RootLand.Value, obj.CrestLand.Value,
@@ -336,6 +341,18 @@ class TestLeadInChamfer(unittest.TestCase):
         plain = cutter_mod.build(points, obj.Pitch.Value, height,
                                  left_handed=obj.LeftHanded)
         self.assertAlmostEqual(obj.Shape.Volume, plain.Volume, places=6)
+
+    def test_clearance_adds_the_crest_relief_to_the_cutter(self):
+        # The other half of the above: with clearance on, the cutter must
+        # carry strictly more than the bare sweep, because the blank has to
+        # be relieved to the crest radius before the groove is cut.
+        obj = self._iso_cutter(mode=form.INTERNAL, lead_in=False)
+        obj.Clearance = 0.0
+        obj.Document.recompute()
+        bare = obj.Shape.Volume
+        obj.Clearance = 0.12
+        obj.Document.recompute()
+        self.assertGreater(obj.Shape.Volume, bare)
 
     def test_lead_in_true_removes_strictly_more_material_than_false(self):
         with_chamfer = self._iso_cutter(mode=form.INTERNAL, lead_in=True)
@@ -460,11 +477,26 @@ class TestFreeEndDetection(unittest.TestCase):
         rod = self._hex_head_rod()
         shaft_face = self._bore_face(rod, 2.0)
         circle = selection.resolve(rod, shaft_face)
-        _cutter_obj, cut_obj = api.create_thread(
+        cutter_obj, cut_obj = api.create_thread(
             self.doc, rod, shaft_face,
             {"Diameter": 4.0, "Pitch": 0.7, "Length": circle.length})
 
-        def threaded_at(z, radius=1.7, steps=24):
+        # Probe just under the CREST, derived from the geometry rather than
+        # hard-coded. The old 1.7 was a constant chosen against a deeper
+        # thread; with clearance now taken radially the crest sits at
+        # 2.0 - radial_offset and the groove only runs cut_depth below that,
+        # which at this size is 0.105mm -- so a fixed 1.7 probe sat below
+        # the root and read "no thread" everywhere, testing nothing about
+        # whether the run reaches the shoulder.
+        crest_r = form.crest_radius(cutter_obj.Mode, 2.0,
+                                    cutter_obj.Clearance.Value,
+                                    cutter_obj.Angle.Value)
+        depth = form.cut_depth(0.7, cutter_obj.Angle.Value,
+                               cutter_obj.RootLand.Value,
+                               cutter_obj.CrestLand.Value)
+        probe_r = crest_r - depth / 2.0
+
+        def threaded_at(z, radius=probe_r, steps=24):
             for deg in range(0, 360, 360 // steps):
                 rad = math.radians(deg)
                 p = App.Vector(radius * math.cos(rad), radius * math.sin(rad), z)

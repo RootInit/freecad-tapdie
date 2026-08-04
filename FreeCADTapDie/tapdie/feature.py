@@ -192,7 +192,8 @@ class ThreadCutter(object):
             # floored at one extrusion width, an ABSOLUTE width, not a pure
             # fraction of pitch (see presets.py for why a pure fraction
             # collapses to a knife edge at a fine pitch).
-            defaults = presets.form_defaults(obj.ThreadForm, obj.Pitch.Value)
+            defaults = presets.form_defaults(obj.ThreadForm, obj.Pitch.Value,
+                                             obj.Mode)
             obj.Angle = defaults["angle"]
             obj.RootLand = defaults["root_land"]
             obj.CrestLand = defaults["crest_land"]
@@ -201,7 +202,9 @@ class ThreadCutter(object):
         obj.setEditorMode("CrestLand", locked)
 
     def onChanged(self, obj, prop):
-        if prop in ("ThreadForm", "Pitch") and hasattr(obj, "Angle"):
+        # Mode belongs here too: ISO's two truncations swap between internal
+        # and external, so flipping Mode changes which land is which.
+        if prop in ("ThreadForm", "Pitch", "Mode") and hasattr(obj, "Angle"):
             self._apply_preset(obj)
 
     def execute(self, obj):
@@ -254,6 +257,19 @@ class ThreadCutter(object):
         # after it failed to fuse at ordinary dimensions). The chamfer sits
         # entirely within [feature_lo, feature_hi], never in the overrun
         # band, so it does not interact with the clamp above.
+        # Crest relief: clearance is radial, so the blank is taken down (or
+        # out) to the crest radius over exactly the threaded run before the
+        # profile's own groove is cut. Added to the same compound as
+        # everything else -- Part::Cut removes every solid in the tool.
+        extras = []
+        relief = cutter.crest_relief(
+            obj.SurfaceRadius.Value,
+            form.crest_radius(obj.Mode, obj.SurfaceRadius.Value,
+                              obj.Clearance.Value, obj.Angle.Value),
+            z_keep_lo, z_keep_hi, obj.Overrun.Value)
+        if relief is not None:
+            extras.append(relief)
+
         if obj.LeadIn and (near_free or far_free):
             tip_radius = points[0][0]
             cones = []
@@ -265,6 +281,9 @@ class ThreadCutter(object):
                 cones.append(cutter.lead_in_cone(
                     tip_radius, obj.SurfaceRadius.Value, feature_hi,
                     into_material=False))
+            extras.extend(cones)
+
+        if extras:
             # COMPOUND, not fuse.  A cutter carrying chamfers is legitimately
             # DISCONNECTED at some phases: whether the helix's last turn
             # reaches the chamfer plane depends on where the sweep's fractional
@@ -280,10 +299,10 @@ class ThreadCutter(object):
             # the tool, connected or not, and building one needs no boolean at
             # all -- so there is no phase-dependent OCC behaviour left to trip
             # over.  Do not "tidy" this back into a fuse.
-            shape = Part.makeCompound([shape] + cones)
+            shape = Part.makeCompound([shape] + extras)
             if not shape.isValid() or not shape.Solids:
                 raise cutter.CutterError(
-                    "lead-in chamfer compound produced an invalid cutter")
+                    "cutter compound (helix + relief + chamfers) is invalid")
 
         # Do NOT transform the shape itself.  Shape.translate()/.rotate() only
         # set the shape's Location; assigning obj.Shape re-syncs that Location

@@ -36,11 +36,22 @@ def profile(shape, z_lo, z_hi, r_max=None):
     the axis, which is why the two conventions are easy to confuse -- they
     only differ once you test a form that is not 90 degrees.
 
-    Also returns cylindrical bands (lands) as (radius, axial width).  Only
-    segments lying wholly inside the z window are considered, so partial
-    features at the window edges cannot skew it.
+    Also returns cylindrical bands (lands) as (radius, axial width), and
+    SHELVES as (axial position, radial width).  Only segments lying wholly
+    inside the z window are considered, so partial features at the window
+    edges cannot skew it.
+
+    A shelf is a flat annulus normal to the axis, standing between a crest
+    and a flank.  It is what a cutter leaves when its flank stops short of
+    the surface and the parallel section covers the difference -- the
+    "material left between pitches" defect.  It gets its own key because
+    this function used to have a BLIND SPOT exactly there: a segment counted
+    as a land when dr was ~0 and as a flank when dz was not ~0, so a shelf
+    (dz ~0, dr large) matched neither and was silently discarded.  Every
+    profile assertion in the suite passed while 0.3697mm of shelf sat in the
+    solid between every pair of turns.
     """
-    flanks, lands, radii = [], [], []
+    flanks, lands, shelves, radii = [], [], [], []
     for edge in shape.section(cut_plane()).Edges:
         a = edge.Vertexes[0].Point
         b = edge.Vertexes[-1].Point
@@ -54,12 +65,15 @@ def profile(shape, z_lo, z_hi, r_max=None):
         dr, dz = b.x - a.x, b.z - a.z
         if abs(dr) < AXIAL_TOL:
             lands.append((round(a.x, 4), abs(dz)))
-        elif abs(dz) >= AXIAL_TOL:
+        elif abs(dz) < AXIAL_TOL:
+            shelves.append((round(a.z, 4), abs(dr)))
+        else:
             flanks.append(math.degrees(math.atan2(abs(dz), abs(dr))))
 
     return {
         "flank_angles": flanks,
         "lands": lands,
+        "shelves": shelves,
         "r_min": min(radii) if radii else None,
         "r_max": max(radii) if radii else None,
     }

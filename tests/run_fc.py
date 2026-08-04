@@ -13,7 +13,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "FreeCADTapDie"))
 sys.path.insert(0, ROOT)
 
-MODULES = ["tests.test_cutter", "tests.test_selection", "tests.test_integration"]
+MODULES = ["tests.test_cutter", "tests.test_selection", "tests.test_integration",
+           "tests.test_profile_shape"]
 
 suite = unittest.TestSuite()
 loader = unittest.TestLoader()

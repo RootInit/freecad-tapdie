@@ -3,6 +3,8 @@
 Pure Python -- no FreeCAD import.
 """
 
+import math
+
 from . import form
 
 # (nominal diameter mm, coarse pitch mm), ISO 261.
@@ -62,30 +64,83 @@ LAND_FRACTION = 0.021
 LAND_CAP = 0.35
 
 
-def form_defaults(form_name, pitch):
+def printed_land(pitch, angle=90.0):
+    """Land width for the printed form: one extrusion width where the pitch
+    can afford it, a near-sharp V where it cannot.
+
+    THE LAND YIELDS TO THE DEPTH. Every term competes for the same budget,
+
+        pitch = crest_land + root_land + 2 * depth * tan(angle / 2)
+
+    so a land floored unconditionally at NOZZLE buys its printable flat
+    straight out of the groove. Measured across the whole ISO coarse table,
+    an unconditional floor left the thread shallower than one extrusion
+    width at EVERY size up to and including M10 -- 0.105mm of depth on
+    M4x0.7, a quarter of a nozzle, which no slicer will resolve. That
+    inverts the floor's own purpose: it guarantees a printable flat by
+    producing an unprintable groove. Depth is what carries the load, so
+    depth wins.
+
+    The result keeps the NOZZLE floor everywhere it is actually affordable
+    (M12 and up at 90 degrees) and falls back towards printed_threads' own
+    near-sharp 0.021 x pitch below that -- which is what printed_threads
+    itself runs, at 0.08mm, well under one extrusion width, and prints fine.
+    """
+    tan = math.tan(math.radians(angle / 2.0))
+    # What the pitch can spare while still leaving one extrusion width of
+    # groove. Goes negative at fine pitches, where no land is affordable.
+    for_depth = (pitch - 2.0 * NOZZLE * tan) / 2.0
+    land = min(max(LAND_FRACTION * pitch, NOZZLE), for_depth,
+               LAND_CAP * pitch)
+    # Never below the near-sharp fraction, and never zero or negative:
+    # form.cutter_points rejects a mathematically sharp edge outright.
+    return max(land, LAND_FRACTION * pitch)
+
+
+def form_defaults(form_name, pitch, mode=form.INTERNAL):
     """Angle and the two land WIDTHS (mm) a preset imposes at this pitch.
 
-    ISO's basic profile truncates the fundamental triangle by H/8 at the
-    root and H/4 at the crest -- a pure fraction of pitch that already
-    scales correctly at any pitch, so it is used as-is, unfloored and
-    uncapped: this is the standard truncation, not a printabilty patch.
+    ISO's basic profile truncates the fundamental triangle so that the flat
+    at the MAJOR diameter is P/8 and the flat at the MINOR diameter is P/4.
+    Which of those is the crest and which the root DEPENDS ON THE MODE, and
+    they are not interchangeable:
 
-    The printed form uses one near-sharp land at both ends, floored at one
-    extrusion width (NOZZLE) so it survives a fine pitch, and capped at
-    LAND_CAP x pitch so the floor can never trip form.cutter_points' "no
-    flank left within the pitch" guard (see LAND_CAP above). This means the
-    printed form's land at a 3.8mm pitch is now 0.4mm, not the 0.08mm
-    printed_threads measures -- a deliberate change, not a regression: a
-    0.08mm land is below one extrusion width and was exactly the "does not
-    have a flat bottom profile" defect this floor exists to fix. Do not
-    restore 0.08mm at 3.8mm pitch without revisiting why the floor exists.
+        internal -- crest is at the minor (P/4), root at the major (P/8)
+        external -- crest is at the major (P/8), root at the minor (P/4)
+
+    This used to return the internal assignment in both modes, so every ISO
+    external thread came out with its two truncations swapped: a P/4 crest
+    where the standard wants P/8. The depth is unaffected (it depends only
+    on the sum) which is why the error survived -- nothing that measured
+    depth could see it.
+
+    Both are pure fractions of pitch that already scale correctly at any
+    pitch, so they are used as-is, unfloored and uncapped: this is the
+    standard truncation, not a printability patch.
+
+    The printed form's land comes from printed_land(), which keeps the
+    one-extrusion-width floor wherever the pitch can afford it and yields to
+    thread depth where it cannot -- see there for the measurements.
+
+    One correction to the record: the floor is NOT, as an earlier version of
+    this docstring claimed, the fix for the "does not have a flat bottom
+    profile" report. That was about the cutter's overrun gouging a hex head,
+    and was fixed by the free/abutting end detection in feature.py. Nothing
+    about land width was ever involved.
     """
     if form_name == form.ISO:
-        return {"angle": 60.0,
-                "root_land": pitch / 8.0,
-                "crest_land": pitch / 4.0}
+        if mode not in (form.INTERNAL, form.EXTERNAL):
+            raise ValueError(
+                "mode %r is not %s or %s"
+                % (mode, form.INTERNAL, form.EXTERNAL))
+        at_major, at_minor = pitch / 8.0, pitch / 4.0
+        if mode == form.INTERNAL:
+            root, crest = at_major, at_minor
+        else:
+            root, crest = at_minor, at_major
+        return {"angle": 60.0, "root_land": root, "crest_land": crest}
     if form_name == form.PRINTED:
-        land = min(max(LAND_FRACTION * pitch, NOZZLE), LAND_CAP * pitch)
+        land = printed_land(pitch)
         return {"angle": 90.0, "root_land": land, "crest_land": land}
     raise ValueError(
         "form %r has no preset; expected %s or %s"

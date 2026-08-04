@@ -145,6 +145,54 @@ def lead_in_cone(tip_radius, surface_radius, z_face, into_material):
     return solid
 
 
+def crest_relief(surface_radius, crest_radius, z_lo, z_hi, overrun):
+    """A cylindrical shell that takes the surface down (or out) to the crest.
+
+    Clearance is applied RADIALLY: relieve the blank, then anchor the thread
+    profile on the relieved surface.  That is what keeps the lands at their
+    requested widths instead of paying for clearance out of the crest land
+    (see form.crest_radius).
+
+    Physically this is what a real die does -- it reduces the OD a little as
+    it cuts -- and what printed_threads builds directly into its shank
+    radius.  Here the blank already exists, so the reduction has to be part
+    of the cutting tool.
+
+    Built by revolving a closed RECTANGLE, not by subtracting one cylinder
+    from another: two coaxial cylinders are the mildest boolean there is, but
+    a revolve is no boolean at all, and this project's own history is a list
+    of booleans that returned valid-looking garbage.
+
+    Returns None when there is nothing to relieve, so a zero clearance costs
+    nothing and adds no solid to the compound.
+    """
+    if z_hi <= z_lo:
+        raise CutterError(
+            "crest relief range [%.4f, %.4f] is empty or inverted"
+            % (z_lo, z_hi))
+    if abs(crest_radius - surface_radius) < 1e-9:
+        return None
+    if crest_radius <= 0.0:
+        raise CutterError(
+            "crest relief would take the surface to r=%.4f, at or through "
+            "the axis" % crest_radius)
+
+    # Span from the relieved surface out past the original one, so the shell
+    # certainly reaches material at every azimuth.
+    if crest_radius < surface_radius:            # EXTERNAL: shave the shaft
+        r_lo, r_hi = crest_radius, surface_radius + overrun
+    else:                                        # INTERNAL: open the bore
+        r_lo, r_hi = max(surface_radius - overrun, 1e-6), crest_radius
+
+    pts = [App.Vector(r_lo, 0.0, z_lo), App.Vector(r_hi, 0.0, z_lo),
+           App.Vector(r_hi, 0.0, z_hi), App.Vector(r_lo, 0.0, z_hi)]
+    face = Part.Face(Part.makePolygon(pts + [pts[0]]))
+    solid = face.revolve(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 360.0)
+    if not solid.isValid() or not solid.Solids:
+        raise CutterError("crest relief revolve produced an invalid solid")
+    return solid
+
+
 def clip_to_axial_range(shape, z_lo, z_hi, radius_reach):
     """Keep only the part of `shape` with builder-frame z in [z_lo, z_hi].
 
