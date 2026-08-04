@@ -172,6 +172,12 @@ class ThreadCutter(object):
         if not hasattr(obj, "LocalPlacement"):
             p("App::PropertyPlacement", "LocalPlacement", "Base",
               "Cutter frame in the base part's local coordinates")
+        if not hasattr(obj, "FlushEnds"):
+            p("App::PropertyBool", "FlushEnds", "Extent",
+              "Face the cutter off flat at the ends of the run, instead of "
+              "letting it overrun a pitch past them. An end that abuts "
+              "adjacent material is always faced off, regardless")
+            obj.FlushEnds = True
         if not hasattr(obj, "LeadIn"):
             p("App::PropertyBool", "LeadIn", "LeadIn",
               "Relieve the first turn at each FREE end with a 45 degree "
@@ -248,9 +254,24 @@ class ThreadCutter(object):
         obj.NearEndFree = near_free
         obj.FarEndFree = far_free
 
+        # FACE THE ENDS OFF FLAT.
+        #
+        # The sweep is deliberately built a pitch longer than the run at each
+        # end -- sweeping exactly to length leaves the crest dying out short
+        # of the end face, which is why printed_threads sweeps past and faces
+        # off flat. FlushEnds is the "faces off flat" half: it trims the
+        # cutter back to the run's own extent, so the tool ends on a plane
+        # perpendicular to the axis instead of on a partial turn hanging a
+        # pitch past the part.
+        #
+        # An ABUTTING end is trimmed whatever FlushEnds says. That is not a
+        # style choice: the overrun gouges straight into whatever it butts
+        # against -- 48.5915 mm3 measured out of a hex head on the fixture
+        # that first surfaced it.
         feature_lo, feature_hi = pitch_v, pitch_v + length_v
-        z_keep_lo = 0.0 if near_free else feature_lo
-        z_keep_hi = height if far_free else feature_hi
+        flush = obj.FlushEnds
+        z_keep_lo = feature_lo if (flush or not near_free) else 0.0
+        z_keep_hi = feature_hi if (flush or not far_free) else height
         if z_keep_lo > 0.0 or z_keep_hi < height:
             radius_reach = max(pt[0] for pt in points)
             shape = cutter.clip_to_axial_range(shape, z_keep_lo, z_keep_hi,

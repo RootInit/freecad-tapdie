@@ -37,6 +37,17 @@ def build(points, pitch, height, left_handed=False):
     if pitch <= 0.0 or height <= 0.0:
         raise CutterError("pitch and height must both be positive")
 
+    # RESTORE THE ACTIVE DOCUMENT AFTERWARDS.
+    #
+    # App.newDocument() makes the new document active even with hidden=True,
+    # and App.closeDocument() does not hand that status back -- it leaves
+    # App.ActiveDocument as None. Every FreeCAD GUI command works on the
+    # active document, so after one thread the whole application appeared
+    # broken: adding a part raised "'NoneType' object has no attribute
+    # 'addObject'", and nothing could be deleted either. It is also what made
+    # the task panel's Cancel raise on App.ActiveDocument.abortTransaction --
+    # a symptom I patched at the call site before finding this cause.
+    previous = App.ActiveDocument
     doc = App.newDocument(SCRATCH, hidden=True)
     try:
         body = doc.addObject("PartDesign::Body", "Cutter")
@@ -83,6 +94,13 @@ def build(points, pitch, height, left_handed=False):
         return shape
     finally:
         App.closeDocument(doc.Name)
+        # Guarded: `previous` may legitimately be None (nothing was active),
+        # and a caller could in principle have closed it while we worked.
+        if previous is not None:
+            try:
+                App.setActiveDocument(previous.Name)
+            except Exception:
+                pass
 
 
 def lead_in_cone(tip_radius, surface_radius, z_face, into_material):

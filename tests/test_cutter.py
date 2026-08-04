@@ -20,6 +20,53 @@ def build(mode=form.INTERNAL, form_name=form.PRINTED, diameter=20.0,
     return cutter.build(pts, pitch, height)
 
 
+class TestScratchDocumentIsolation(unittest.TestCase):
+    """The hidden scratch document must not disturb the user's session.
+
+    App.newDocument() makes the new document active even with hidden=True,
+    and closeDocument() leaves App.ActiveDocument as None rather than handing
+    it back. Since every FreeCAD GUI command works on the active document,
+    that made the whole application appear broken after a single thread:
+    adding a part raised "'NoneType' object has no attribute 'addObject'",
+    and nothing could be deleted.
+    """
+
+    def setUp(self):
+        self.doc = App.newDocument("scratchtest")
+        App.setActiveDocument(self.doc.Name)
+
+    def tearDown(self):
+        App.closeDocument(self.doc.Name)
+
+    def test_build_leaves_the_active_document_alone(self):
+        build()
+        self.assertIsNotNone(App.ActiveDocument,
+                             "build() left no active document at all")
+        self.assertEqual(App.ActiveDocument.Name, self.doc.Name)
+
+    def test_the_document_is_still_usable_afterwards(self):
+        """The symptom as the user meets it, not just the attribute."""
+        build()
+        App.ActiveDocument.addObject("Part::Box", "AfterBuild")
+        App.ActiveDocument.recompute()
+        self.assertIn("AfterBuild",
+                      [o.Name for o in self.doc.Objects])
+
+    def test_repeated_builds_do_not_accumulate_documents(self):
+        before = set(App.listDocuments())
+        for _ in range(3):
+            build()
+        self.assertEqual(set(App.listDocuments()), before,
+                         "a scratch document was left open")
+
+    def test_a_failed_build_also_restores_the_active_document(self):
+        # The restore lives in a finally, so it must survive the raise.
+        with self.assertRaises(cutter.CutterError):
+            cutter.build([(1.0, 0.0), (2.0, 1.0)], 1.0, 1.0)
+        self.assertIsNotNone(App.ActiveDocument)
+        self.assertEqual(App.ActiveDocument.Name, self.doc.Name)
+
+
 class TestCutterSolid(unittest.TestCase):
     def test_produces_a_single_valid_solid(self):
         sh = build()

@@ -248,6 +248,21 @@ class TestLeadInChamfer(unittest.TestCase):
                          "%s end: no 45 degree chamfer edge found in %s"
                          % (label, angles))
 
+    @staticmethod
+    def _inside(shape, point):
+        """isInside, per SOLID -- never on the compound itself.
+
+        Shape.isInside() is unreliable on a compound: measured on this build
+        (tools/probe_flush_chamfer.py), a point that lies inside the lead-in
+        cone -- confirmed by testing that cone solid on its own, at all 24
+        sampled azimuths -- reported False when the same call was made
+        against the compound holding it. The cutter has been a compound of
+        helix + relief + chamfers since the chamfer fix, so every probe here
+        has to go solid by solid or it is measuring the wrong thing.
+        """
+        return any(solid.isInside(point, 1e-7, True)
+                   for solid in shape.Solids)
+
     def _full_circle_removed(self, shape, radius, z, steps=24):
         """True only if EVERY sampled azimuth at (radius, z) is removed
         material. The lead-in cone is a full 360 degree revolve, unlike the
@@ -257,7 +272,7 @@ class TestLeadInChamfer(unittest.TestCase):
         for deg in range(0, 360, 360 // steps):
             rad = math.radians(deg)
             p = App.Vector(radius * math.cos(rad), radius * math.sin(rad), z)
-            if not shape.isInside(p, 1e-7, True):
+            if not self._inside(shape, p):
                 return False
         return True
 
@@ -389,6 +404,11 @@ class TestLeadInChamfer(unittest.TestCase):
 
         obj = self._iso_cutter(mode=form.INTERNAL, lead_in=False)
         obj.Clearance = 0.0
+        # FlushEnds off too: it trims the sweep back to the run's extent, so
+        # comparing a flush cutter against the untrimmed sweep measured 159.7
+        # against 209.6. Both properties are deliberately neutralised here so
+        # what remains is the plain helix and nothing else.
+        obj.FlushEnds = False
         obj.Document.recompute()
         points = form.cutter_points(
             obj.Mode, obj.ThreadForm, obj.Diameter.Value, obj.Pitch.Value,
@@ -398,6 +418,46 @@ class TestLeadInChamfer(unittest.TestCase):
         plain = cutter_mod.build(points, obj.Pitch.Value, height,
                                  left_handed=obj.LeftHanded)
         self.assertAlmostEqual(obj.Shape.Volume, plain.Volume, places=6)
+
+    def test_flush_ends_trims_the_sweep_to_the_run(self):
+        """FlushEnds faces the cutter off at the run's own ends.
+
+        The sweep is built a pitch longer at each end on purpose -- sweeping
+        exactly to length leaves the crest dying out short of the face -- so
+        this is the "then cut flush" half of that.
+        """
+        obj = self._iso_cutter(mode=form.INTERNAL, lead_in=False)
+        obj.FlushEnds = False
+        obj.Document.recompute()
+        loose = obj.Shape.optimalBoundingBox()
+        obj.FlushEnds = True
+        obj.Document.recompute()
+        flush = obj.Shape.optimalBoundingBox()
+
+        pitch, length = obj.Pitch.Value, obj.Length.Value
+        self.assertAlmostEqual(flush.ZMax - flush.ZMin, length, places=3)
+        # The untrimmed sweep overshoots by a pitch of overrun at each end
+        # PLUS the profile's own axial half-width, since the profile is
+        # centred on v=0 and swept from z=0 to z=height.
+        self.assertGreaterEqual(
+            (loose.ZMax - loose.ZMin) - (flush.ZMax - flush.ZMin),
+            2.0 * pitch - 1e-6)
+
+    def test_an_abutting_end_is_faced_off_even_with_flush_ends_off(self):
+        """Not a style choice: the overrun gouges what it butts against.
+
+        Verified through _detect_free_ends' own output rather than by
+        rebuilding a hex-head fixture here -- an unattached cutter reports
+        both ends free, so this pins the logic that consumes those flags.
+        """
+        obj = self._iso_cutter(mode=form.INTERNAL, lead_in=False)
+        obj.FlushEnds = False
+        obj.Document.recompute()
+        self.assertTrue(obj.NearEndFree and obj.FarEndFree,
+                        "fixture assumption: an unattached cutter is free")
+        # With both ends free and FlushEnds off, nothing is trimmed.
+        loose = obj.Shape.optimalBoundingBox()
+        self.assertGreater(loose.ZMax - loose.ZMin, obj.Length.Value)
 
     def test_clearance_adds_the_crest_relief_to_the_cutter(self):
         # The other half of the above: with clearance on, the cutter must
@@ -439,8 +499,12 @@ class TestLeadInChamfer(unittest.TestCase):
             self.assertTrue(solid.isValid())
         half = obj.Length.Value / 2.0
         core_probe = App.Vector(0.15, 0.0, -half + 0.05)
+        # Per-solid, not on the compound: isInside on a compound is
+        # unreliable (see _inside), and here it would fail OPEN -- reporting
+        # False for a point that really is inside one of the solids would
+        # pass this assertion while the chamfer was severing the core.
         self.assertFalse(
-            obj.Shape.isInside(core_probe, 1e-7, True),
+            self._inside(obj.Shape, core_probe),
             "external chamfer removed material near the axis -- it should "
             "only bevel the outer corner, not cut into the shaft's core")
 

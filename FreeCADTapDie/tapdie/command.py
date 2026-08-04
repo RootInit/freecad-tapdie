@@ -4,12 +4,7 @@ import os
 
 import FreeCAD as App
 import FreeCADGui as Gui
-from PySide import QtCore, QtGui
-
-# A helical sweep takes the better part of a second, so rebuilding the preview
-# on every keystroke would make the spin boxes unusable. Coalesce edits and
-# rebuild once the user stops typing.
-PREVIEW_DELAY_MS = 450
+from PySide import QtGui
 
 # Deliberately NOT `from . import api, form, selection` at module scope.
 # That chain pulls in api -> feature -> cutter, which does `import Part` and
@@ -110,25 +105,37 @@ class ThreadTaskPanel(object):
         self.clearance.setValue(0.12)
         layout.addRow("Clearance", self.clearance)
 
+        self.flush_ends = QtGui.QCheckBox()
+        self.flush_ends.setChecked(True)
+        self.flush_ends.setToolTip(
+            "Face the cutter off flat where the run ends, instead of "
+            "letting it overrun a pitch past them.\n"
+            "An end that butts against adjacent material is always faced "
+            "off, regardless of this.")
+        layout.addRow("Flush ends", self.flush_ends)
+
         self.left_handed = QtGui.QCheckBox()
         layout.addRow("Left handed", self.left_handed)
+
+        self.refresh_button = QtGui.QPushButton("Refresh preview")
+        self.refresh_button.clicked.connect(self._rebuild)
+        layout.addRow(self.refresh_button)
 
         self.note = QtGui.QLabel("")
         self.note.setWordWrap(True)
         layout.addRow(self.note)
 
-        # One timer, restarted by every edit, so a burst of keystrokes costs
-        # exactly one rebuild.
-        self.timer = QtCore.QTimer()
-        self.timer.setSingleShot(True)
-        self.timer.setInterval(PREVIEW_DELAY_MS)
-        self.timer.timeout.connect(self._rebuild)
-
+        # Editing a control marks the preview STALE rather than rebuilding
+        # it. A helical sweep takes the better part of a second, so
+        # rebuilding per edit made changing three fields cost three waits --
+        # set everything you want, then press Refresh once.
+        self.stale = False
         for widget in (self.mode, self.thread_form, self.direction):
-            widget.currentTextChanged.connect(self._schedule)
+            widget.currentTextChanged.connect(self._touch)
         for widget in (self.diameter, self.pitch, self.length, self.clearance):
-            widget.valueChanged.connect(self._schedule)
-        self.left_handed.toggled.connect(self._schedule)
+            widget.valueChanged.connect(self._touch)
+        for widget in (self.left_handed, self.flush_ends):
+            widget.toggled.connect(self._touch)
 
         self._build()
 
@@ -145,6 +152,7 @@ class ThreadTaskPanel(object):
             "Length": self.length.value(),
             "Direction": self.direction.currentText(),
             "Clearance": self.clearance.value(),
+            "FlushEnds": self.flush_ends.isChecked(),
             "LeftHanded": self.left_handed.isChecked(),
         }
 
@@ -183,13 +191,16 @@ class ThreadTaskPanel(object):
         else:
             self._say(None)
 
-    def _schedule(self):
-        self.timer.start()
+    def _touch(self):
+        """Mark the preview out of date without rebuilding it."""
+        self.stale = True
+        self._say(None)
 
     def _rebuild(self):
         """Re-parameterise the existing preview, or build it if it is gone."""
         from . import api
 
+        self.stale = False
         if self.cutter_obj is None:
             self._build()
             return
@@ -211,6 +222,14 @@ class ThreadTaskPanel(object):
             self.note.setText("Cannot build: %s" % exc)
             self.note.setStyleSheet("color: #c0392b;")
             return
+        if self.stale:
+            # Never leave a changed setting looking applied. The red solid in
+            # the viewport is still the OLD one until Refresh is pressed.
+            self.note.setText(
+                "Settings changed -- press Refresh preview to see them. "
+                "OK refreshes first.")
+            self.note.setStyleSheet("color: #b9770e;")
+            return
         self.note.setStyleSheet("")
         if self.thread_form.currentText() == form.ISO:
             self.note.setText(
@@ -225,10 +244,10 @@ class ThreadTaskPanel(object):
     # ---- dialog --------------------------------------------------------
 
     def accept(self):
-        # A pending edit must land before OK does, or the committed geometry
-        # would silently be one edit behind what the dialog shows.
-        if self.timer.isActive():
-            self.timer.stop()
+        # An un-refreshed edit must land before OK does, or the committed
+        # geometry would silently be whatever was last previewed rather than
+        # what the dialog now reads.
+        if self.stale:
             self._rebuild()
         if not self.preview_ok:
             QtGui.QMessageBox.warning(
@@ -262,7 +281,6 @@ class ThreadTaskPanel(object):
         return True
 
     def reject(self):
-        self.timer.stop()
         doc = self.doc
         if self.transaction_open:
             # Remove the objects, then COMMIT -- do not abort.

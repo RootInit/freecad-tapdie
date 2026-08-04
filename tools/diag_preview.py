@@ -1,8 +1,8 @@
 """Exercise the task panel's preview lifecycle in a real (offscreen) GUI.
 
 freecadcmd cannot test this: there is no FreeCADGui and no PySide event loop,
-so the panel -- the one part of the addon that owns Qt widgets, a timer and
-an undo transaction -- would otherwise ship entirely unexercised.
+so the panel -- the one part of the addon that owns Qt widgets and an undo
+transaction -- would otherwise ship entirely unexercised.
 
 Checks, in order:
   * the panel builds a preview the moment it opens
@@ -131,8 +131,7 @@ check("the cutter is drawn translucent red",
 names_before = (panel.cutter_obj.Name,)
 count_before = len(doc.Objects)
 panel.direction.setCurrentText(form.FORWARD)
-panel.timer.stop()          # fire the debounce by hand, no event loop here
-panel._rebuild()
+panel._rebuild()            # the Refresh button, pressed by hand
 check("direction change kept the same objects",
       (panel.cutter_obj.Name,) == names_before)
 check("direction change leaked nothing",
@@ -161,7 +160,6 @@ line("   box z                : %.3f .. %.3f" % (box.ZMin, box.ZMax))
 # The placement composition is exact and is the actual contract.
 for direction in form.DIRECTIONS:
     panel.direction.setCurrentText(direction)
-    panel.timer.stop()
     panel._rebuild()
     obj = panel.cutter_obj
     z_lo, _z_hi = form.span(direction, obj.Length.Value)
@@ -176,9 +174,48 @@ for direction in form.DIRECTIONS:
     check("%s still previews" % direction, panel.preview_ok,
           panel.note.text())
 
+# --- stale marking: an edit must not silently look applied -----------------
+panel.direction.setCurrentText(form.BOTH)
+panel._rebuild()
+before_edit = panel.cutter_obj.Shape.Volume
+panel.length.setValue(panel.length.value() + 4.0)
+check("editing a control marks the preview stale", panel.stale)
+check("a stale edit does NOT rebuild on its own",
+      abs(panel.cutter_obj.Shape.Volume - before_edit) < 1e-9)
+check("the note says the preview is out of date",
+      "press Refresh" in panel.note.text(), panel.note.text())
+panel._rebuild()
+check("Refresh applies the pending edit", not panel.stale)
+check("Refresh actually changed the geometry",
+      abs(panel.cutter_obj.Shape.Volume - before_edit) > 1e-6)
+
+# --- flush ends -------------------------------------------------------------
+panel.flush_ends.setChecked(True)
+panel._rebuild()
+flush_box = panel.cutter_obj.Shape.optimalBoundingBox()
+flush_len = flush_box.ZMax - flush_box.ZMin
+panel.flush_ends.setChecked(False)
+panel._rebuild()
+over_box = panel.cutter_obj.Shape.optimalBoundingBox()
+over_len = over_box.ZMax - over_box.ZMin
+pitch = panel.cutter_obj.Pitch.Value
+# At least the two pitches of overrun, and no more than that plus the
+# profile's own axial extent -- the unclipped sweep also overshoots each end
+# by the profile half-width, since the profile is centred on v=0 and swept
+# from z=0 to z=height. That is geometry, not overrun, so a tolerance tight
+# enough to exclude it was simply wrong.
+check("flush ends remove at least the two pitches of overrun",
+      2.0 * pitch - 1e-6 <= (over_len - flush_len) <= 3.0 * pitch,
+      "flush=%.3f overrun=%.3f diff=%.3f (pitch %.3f)"
+      % (flush_len, over_len, over_len - flush_len, pitch))
+check("flush cutter matches the run length",
+      abs(flush_len - panel.cutter_obj.Length.Value) < 0.35 * pitch,
+      "cutter=%.3f run=%.3f" % (flush_len, panel.cutter_obj.Length.Value))
+panel.flush_ends.setChecked(True)
+panel._rebuild()
+
 # --- a bad parameter set reports itself and refuses to apply ---------------
 panel.pitch.setValue(19.0)
-panel.timer.stop()
 panel._rebuild()
 check("unbuildable settings clear preview_ok", not panel.preview_ok)
 check("unbuildable settings explain themselves",
