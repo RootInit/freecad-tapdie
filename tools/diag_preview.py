@@ -398,6 +398,61 @@ check("asking for 24 on a 20mm shaft says it cannot",
       panel5.note.text())
 guarded("reject() the diameter panel", panel5.reject)
 
+# --- simple / advanced ------------------------------------------------------
+# Only an offscreen GUI can see a widget's visibility, so this is the only
+# place the toggle can be tested at all.
+doc6 = App.newDocument("simpleadv")
+App.setActiveDocument(doc6.Name)
+base6, sub6 = shaft(doc6, radius=4.0, height=20.0)
+panel6, _c6 = panel_for(doc6, base6, sub6)
+# isVisible() is False for EVERY widget here -- the dialog is never shown in
+# an offscreen run, and a child of an unshown parent is never "visible". The
+# first version of these checks used it and the "start hidden" case passed
+# vacuously while every positive case failed. isHidden() reports the explicit
+# state, which is the thing the toggle actually sets.
+check("the panel opens in Simple mode", not panel6.advanced.isChecked())
+shown = [w for _l, w in panel6.advanced_rows if not w.isHidden()]
+check("advanced rows start hidden", not shown,
+      "%d still showing" % len(shown))
+check("the settings that matter are still there",
+      not panel6.diameter.isHidden() and not panel6.pitch.isHidden()
+      and not panel6.length.isHidden() and not panel6.clearance.isHidden()
+      and not panel6.mode.isHidden())
+panel6.advanced.setChecked(True)
+hidden = [w for _l, w in panel6.advanced_rows if w.isHidden()]
+check("Advanced reveals every advanced row", not hidden,
+      "%d still hidden" % len(hidden))
+check("the flat clearance is one of them",
+      not panel6.flat_clearance.isHidden())
+panel6.advanced.setChecked(False)
+check("and Simple hides them again",
+      all(w.isHidden() for _l, w in panel6.advanced_rows))
+check("toggling visibility does NOT mark the preview stale", not panel6.stale,
+      "a visibility control must not invalidate geometry")
+
+# Custom must reveal the controls it unlocks, or it is a dead end again.
+panel6.thread_form.setCurrentText(form.CUSTOM)
+check("picking Custom switches to Advanced by itself",
+      panel6.advanced.isChecked())
+check("Custom's own controls are shown and enabled",
+      not panel6.angle.isHidden() and panel6.angle.isEnabled()
+      and not panel6.root_land.isHidden()
+      and not panel6.crest_land.isHidden())
+
+# The two clearances are independent.
+panel6.thread_form.setCurrentText(form.PRINTED)
+panel6.flat_clearance.setValue(0.30)
+guarded("Refresh with a wider flat clearance", panel6._rebuild)
+check("a wider flat clearance still builds", panel6.preview_ok,
+      panel6.note.text())
+check("flat clearance reached the feature",
+      abs(panel6.cutter_obj.FlatClearance.Value - 0.30) < 1e-9,
+      "FlatClearance=%s" % panel6.cutter_obj.FlatClearance.Value)
+check("and did not disturb the flank clearance",
+      abs(panel6.cutter_obj.Clearance.Value - 0.12) < 1e-9,
+      "Clearance=%s" % panel6.cutter_obj.Clearance.Value)
+guarded("reject() the simple/advanced panel", panel6.reject)
+
 line("")
 line("PREVIEW DIAG: %d failure(s)" % len(failures))
 for name in failures:

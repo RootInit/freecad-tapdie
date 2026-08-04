@@ -155,8 +155,18 @@ class ThreadCutter(object):
             obj.CrestLand = 0.08
         if not hasattr(obj, "Clearance"):
             p("App::PropertyLength", "Clearance", "Fit",
-              "Gap normal to the flanks")
+              "Flank clearance, per part: a mated pair ends up 2x this "
+              "apart measured normal to the flanks")
             obj.Clearance = 0.12
+        if not hasattr(obj, "FlatClearance"):
+            p("App::PropertyLength", "FlatClearance", "Fit",
+              "Radial clearance at the flats, per part: a mated pair ends "
+              "up 2x this apart between each crest and the root facing it. "
+              "Separate from Clearance because flank fit and root fit are "
+              "different allowances -- and a printed thread usually wants "
+              "more here, the crest being the least accurate feature an FDM "
+              "machine makes")
+            obj.FlatClearance = 0.12
         if not hasattr(obj, "Length"):
             p("App::PropertyLength", "Length", "Extent", "Threaded length")
             obj.Length = 15.2
@@ -292,7 +302,7 @@ class ThreadCutter(object):
         anchor = form.effective_surface_radius(
             obj.Mode, obj.Diameter.Value, obj.Pitch.Value, obj.Angle.Value,
             obj.RootLand.Value, obj.CrestLand.Value, obj.Clearance.Value,
-            surface)
+            surface, obj.FlatClearance.Value)
         points = form.cutter_points(
             obj.Mode, obj.ThreadForm, obj.Diameter.Value, obj.Pitch.Value,
             obj.Angle.Value, obj.RootLand.Value, obj.CrestLand.Value,

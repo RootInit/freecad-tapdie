@@ -60,15 +60,26 @@ class ThreadTaskPanel(object):
         self.form = QtGui.QWidget()
         self.form.setWindowTitle("Tap / Die")
         layout = QtGui.QFormLayout(self.form)
+        # Rows that only show in Advanced. QFormLayout.setRowVisible is Qt
+        # 6.4+, so the label is built by hand and hidden with its field
+        # rather than relying on it.
+        self.advanced_rows = []
+
+        def row(text, widget, advanced=False):
+            label = QtGui.QLabel(text)
+            layout.addRow(label, widget)
+            if advanced:
+                self.advanced_rows.append((label, widget))
+            return widget
 
         self.mode = QtGui.QComboBox()
         self.mode.addItems([form.INTERNAL, form.EXTERNAL])
         self.mode.setCurrentText(defaults["Mode"])
-        layout.addRow("Mode", self.mode)
+        row("Mode", self.mode)
 
         self.thread_form = QtGui.QComboBox()
         self.thread_form.addItems(list(form.FORMS))
-        layout.addRow("Form", self.thread_form)
+        row("Form", self.thread_form)
 
         # Angle and the two lands are preset-driven, so they are shown but
         # DISABLED unless Form is Custom -- mirroring the lock feature.py
@@ -86,7 +97,7 @@ class ThreadTaskPanel(object):
             "Included angle. 90 puts every flank at exactly the 45 degree "
             "overhang limit, which is the FDM optimum; ISO's 60 gives a 60 "
             "degree overhang and droops when printed axis-vertical.")
-        layout.addRow("Angle", self.angle)
+        row("Angle", self.angle, advanced=True)
 
         self.root_land = QtGui.QDoubleSpinBox()
         self.root_land.setRange(0.0005, 100.0)
@@ -95,7 +106,7 @@ class ThreadTaskPanel(object):
         self.root_land.setToolTip(
             "Flat at the bottom of the groove (the thread's root). Keeps "
             "the MATING part's crest printable.")
-        layout.addRow("Root land", self.root_land)
+        row("Root land", self.root_land, advanced=True)
 
         self.crest_land = QtGui.QDoubleSpinBox()
         self.crest_land.setRange(0.0005, 100.0)
@@ -105,27 +116,27 @@ class ThreadTaskPanel(object):
             "Flat left on the surface between grooves (the crest). Keeps "
             "THIS part's crest printable. Not the same job as the root "
             "land, so do not assume they should be equal.")
-        layout.addRow("Crest land", self.crest_land)
+        row("Crest land", self.crest_land, advanced=True)
 
         self.diameter = QtGui.QDoubleSpinBox()
         self.diameter.setRange(0.1, 1000.0)
         self.diameter.setSingleStep(0.5)
         self.diameter.setDecimals(3)
         self.diameter.setValue(defaults["Diameter"])
-        layout.addRow("Diameter", self.diameter)
+        row("Diameter", self.diameter)
 
         self.pitch = QtGui.QDoubleSpinBox()
         self.pitch.setRange(0.05, 50.0)
         self.pitch.setSingleStep(0.25)
         self.pitch.setDecimals(3)
         self.pitch.setValue(defaults["Pitch"])
-        layout.addRow("Pitch", self.pitch)
+        row("Pitch", self.pitch)
 
         self.length = QtGui.QDoubleSpinBox()
         self.length.setRange(0.05, 2000.0)
         self.length.setDecimals(3)
         self.length.setValue(defaults["Length"])
-        layout.addRow("Length", self.length)
+        row("Length", self.length)
 
         self.direction = QtGui.QComboBox()
         self.direction.addItems(list(form.DIRECTIONS))
@@ -135,14 +146,30 @@ class ThreadTaskPanel(object):
             "'Both ways' straddles it -- right for a cylindrical face, "
             "wrong for an edge at the end of a rod, where half the cutter "
             "lands in open air.")
-        layout.addRow("Direction", self.direction)
+        row("Direction", self.direction)
 
         self.clearance = QtGui.QDoubleSpinBox()
         self.clearance.setRange(0.0, 5.0)
         self.clearance.setDecimals(3)
         self.clearance.setSingleStep(0.01)
         self.clearance.setValue(0.12)
-        layout.addRow("Clearance", self.clearance)
+        self.clearance.setToolTip(
+            "Flank clearance, per part: a mated pair ends up twice this "
+            "apart measured normal to the flanks.")
+        row("Clearance", self.clearance)
+
+        self.flat_clearance = QtGui.QDoubleSpinBox()
+        self.flat_clearance.setRange(0.0, 5.0)
+        self.flat_clearance.setDecimals(3)
+        self.flat_clearance.setSingleStep(0.01)
+        self.flat_clearance.setValue(0.12)
+        self.flat_clearance.setToolTip(
+            "Radial clearance at the flats, per part: a mated pair ends up "
+            "twice this apart between each crest and the root facing it.\n"
+            "Separate from flank clearance on purpose -- a printed thread "
+            "usually wants more here, the crest being the least accurate "
+            "feature an FDM machine makes. At zero the flats touch.")
+        row("Flat clearance", self.flat_clearance, advanced=True)
 
         # Exposed because it can make a selection unbuildable and there was
         # no way to correct it: for a bore the overrun runs INWARD, so the
@@ -158,7 +185,7 @@ class ThreadTaskPanel(object):
             "How far the cutter's parallel section reaches past the surface "
             "it is cutting.\nFor a bore this runs towards the axis, so it "
             "must stay under the bore radius.")
-        layout.addRow("Overrun", self.overrun)
+        row("Overrun", self.overrun, advanced=True)
 
         self.flush_ends = QtGui.QCheckBox()
         self.flush_ends.setChecked(True)
@@ -167,7 +194,7 @@ class ThreadTaskPanel(object):
             "letting it overrun a pitch past them.\n"
             "An end that butts against adjacent material is always faced "
             "off, regardless of this.")
-        layout.addRow("Flush ends", self.flush_ends)
+        row("Flush ends", self.flush_ends, advanced=True)
 
         self.start_angle = QtGui.QDoubleSpinBox()
         self.start_angle.setRange(-360.0, 360.0)
@@ -182,10 +209,22 @@ class ThreadTaskPanel(object):
             "An internal thread is already clocked half a pitch round from "
             "an external one, so a nut and bolt cut with the same settings "
             "mate as they stand -- this is your adjustment on top of that.")
-        layout.addRow("Start angle", self.start_angle)
+        row("Start angle", self.start_angle, advanced=True)
 
         self.left_handed = QtGui.QCheckBox()
-        layout.addRow("Left handed", self.left_handed)
+        row("Left handed", self.left_handed, advanced=True)
+
+        # SIMPLE BY DEFAULT. Mode, Form, Diameter, Pitch, Length, Direction
+        # and Clearance are enough to cut a thread; everything else is either
+        # preset-driven or a detail most users never touch, and thirteen rows
+        # of it buried the seven that matter. Purely a visibility control --
+        # it changes no parameter, so it must not mark the preview stale.
+        self.advanced = QtGui.QCheckBox("Show advanced settings")
+        self.advanced.setToolTip(
+            "Angle and lands, the flat clearance, overrun, start angle, "
+            "flush ends and handedness.")
+        self.advanced.toggled.connect(self._sync_advanced)
+        layout.addRow(self.advanced)
 
         self.refresh_button = QtGui.QPushButton("Refresh preview")
         self.refresh_button.clicked.connect(self._rebuild)
@@ -204,13 +243,22 @@ class ThreadTaskPanel(object):
             widget.currentTextChanged.connect(self._touch)
         for widget in (self.diameter, self.pitch, self.length, self.clearance,
                        self.overrun, self.angle, self.root_land,
-                       self.crest_land, self.start_angle):
+                       self.crest_land, self.start_angle,
+                       self.flat_clearance):
             widget.valueChanged.connect(self._touch)
         for widget in (self.left_handed, self.flush_ends):
             widget.toggled.connect(self._touch)
 
+        self._sync_advanced()
         self._sync_form_controls()
         self._build()
+
+    def _sync_advanced(self):
+        """Show or hide the advanced rows."""
+        show = self.advanced.isChecked()
+        for label, widget in self.advanced_rows:
+            label.setVisible(show)
+            widget.setVisible(show)
 
     def _sync_form_controls(self):
         """Enable Angle and the lands for Custom only, seeding from the preset.
@@ -224,6 +272,11 @@ class ThreadTaskPanel(object):
         from . import form, presets
 
         custom = self.thread_form.currentText() == form.CUSTOM
+        if custom and not self.advanced.isChecked():
+            # Custom unlocks Angle and the lands, which are advanced rows --
+            # leaving them hidden would recreate the dead end this control
+            # was added to fix.
+            self.advanced.setChecked(True)      # fires _sync_advanced
         if not custom:
             defaults = presets.form_defaults(
                 self.thread_form.currentText(), self.pitch.value(),
@@ -252,6 +305,7 @@ class ThreadTaskPanel(object):
             "Length": self.length.value(),
             "Direction": self.direction.currentText(),
             "Clearance": self.clearance.value(),
+            "FlatClearance": self.flat_clearance.value(),
             "Overrun": self.overrun.value(),
             "StartAngle": self.start_angle.value(),
             "FlushEnds": self.flush_ends.isChecked(),

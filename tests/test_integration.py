@@ -438,6 +438,12 @@ class TestLeadInChamfer(unittest.TestCase):
 
         obj = self._iso_cutter(mode=form.INTERNAL, lead_in=False)
         obj.Clearance = 0.0
+        # FlatClearance too: it is the OTHER thing that moves the anchor off
+        # the selected surface, by opening the bore out to leave a gap
+        # between the mated flats. Zeroing only the flank clearance left the
+        # profile anchored 0.24mm away from SurfaceRadius and the comparison
+        # measured a crest relief that was never part of the sweep.
+        obj.FlatClearance = 0.0
         # FlushEnds off too: it trims the sweep back to the run's extent, so
         # comparing a flush cutter against the untrimmed sweep measured 159.7
         # against 209.6. Both properties are deliberately neutralised here so

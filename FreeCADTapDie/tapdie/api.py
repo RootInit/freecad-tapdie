@@ -68,22 +68,23 @@ def diameter_note(cutter_obj):
     # only the direction no cutting tool can do -- a thread larger than the
     # shaft, or smaller than the bore -- so anything reported here is a
     # request that was genuinely clamped, not a rounding difference.
+    flat = cutter_obj.FlatClearance.Value
     anchor = form.effective_surface_radius(
         mode, cutter_obj.Diameter.Value, cutter_obj.Pitch.Value,
         cutter_obj.Angle.Value, cutter_obj.RootLand.Value,
         cutter_obj.CrestLand.Value, cutter_obj.Clearance.Value,
-        cutter_obj.SurfaceRadius.Value)
+        cutter_obj.SurfaceRadius.Value, flat)
     got = form.achieved_diameter(
         mode, cutter_obj.Pitch.Value, cutter_obj.Angle.Value,
         cutter_obj.RootLand.Value, cutter_obj.CrestLand.Value,
-        cutter_obj.Clearance.Value, anchor)
+        cutter_obj.Clearance.Value, anchor, flat)
     want = cutter_obj.Diameter.Value
     if abs(got - want) <= DIAMETER_TOLERANCE:
         return None
     needed = 2.0 * form.required_surface_radius(
         mode, want, cutter_obj.Pitch.Value, cutter_obj.Angle.Value,
         cutter_obj.RootLand.Value, cutter_obj.CrestLand.Value,
-        cutter_obj.Clearance.Value)
+        cutter_obj.Clearance.Value, flat)
     surface = "shaft" if mode == form.EXTERNAL else "bore"
     direction = "smaller" if mode == form.EXTERNAL else "larger"
     return ("This cuts a %.2fmm thread, not %.2fmm: a %.2fmm thread needs a "
