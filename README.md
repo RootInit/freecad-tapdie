@@ -44,11 +44,22 @@ the thread with it.
 - **Direction** matters when you select an *edge*. An edge sits at one end of
   the feature, so "Both ways" would put half the run in open air. It is probed
   for automatically; a cylindrical face always straddles its own midpoint.
-- **Clearance is taken radially.** The cutter relieves the blank to the crest
-  radius over the threaded run and anchors the thread profile on that relieved
-  surface — which is what a real die does. A bolt and a nut cut with the same
-  settings end up `2 × clearance` apart on the flanks, and the crest and root
-  flats come out at exactly the widths asked for at any pitch.
+- **Clearance is taken radially, in every direction.** The cutter relieves the
+  blank to the crest radius over the threaded run and anchors the profile on
+  that relieved surface — which is what a real die does. A bolt and a nut cut
+  with the same settings end up `2 × clearance` apart **on the flanks and at
+  the flats alike**; the crest and root lands come out at exactly the widths
+  asked for at any pitch. (The flats used to have *zero* gap — the flank
+  offset and the bore size cancelled exactly. `tools/probe_mated_gap.py`
+  measures it.)
+- **The printed 90° form is near-triangular.** Its lands are 0.021 × pitch —
+  0.026 mm at M8×1.25 — just enough to avoid a mathematically sharp tip, which
+  is the tangency case where consecutive turns of the sweep touch. Everything
+  else in the pitch budget goes to depth.
+- **Start angle** sets where the thread begins around the axis, for lining a
+  thread up with something else. An internal thread is already clocked half a
+  pitch (180°) from an external one, so a nut and bolt cut with the same
+  settings mate as they stand.
 - **Ends that abut adjacent material are detected** (a shoulder, a hex head, a
   blind bore's floor) and faced off flat with no lead-in chamfer, so the
   sweep's overrun does not gouge into the neighbour. Free ends get a 45°

@@ -46,55 +46,47 @@ def nearest_for_shaft(shaft_diameter):
     return min(ISO_COARSE, key=lambda e: abs(e[0] - shaft_diameter))
 
 
-# One extrusion width: the floor for any modelled land, printed or not.
+# One extrusion width. No longer a floor for the land -- see printed_land --
+# but still the reference for what a printer can actually resolve.
 NOZZLE = 0.4
-# printed_threads' near-sharp land, as a pure fraction of pitch. Correct at
-# the 3.8mm pitch it was reverse-engineered from (0.021 x 3.8 = 0.08mm), but
-# a PURE fraction does not survive a change of pitch: at 1.25mm it collapses
-# to 0.026mm, about 1/15th of an extrusion width -- a knife edge the nozzle
-# cannot resolve, so the thread prints without the flat bottom it was
-# designed to have. Floored at NOZZLE below.
+# printed_threads' near-sharp land, as a pure fraction of pitch: 0.021 x 3.8
+# = 0.08mm at the pitch it was reverse-engineered from. This is the whole
+# rule for the printed form now.
 LAND_FRACTION = 0.021
-# Never let a single land exceed this share of the pitch. NOT optional:
-# form.cutter_points rejects root_land + crest_land >= pitch, and an
-# unconditional NOZZLE floor on BOTH lands sums to 0.8mm, which alone
-# already breaks every pitch <= 0.8mm (M5 and below, including M4/M3). With
-# this cap the two lands can sum to at most 2 * LAND_CAP * pitch = 0.7 x
-# pitch, which can never trip that guard.
+# Never let a single land exceed this share of the pitch. form.cutter_points
+# rejects root_land + crest_land >= pitch, and while LAND_FRACTION can never
+# approach that on its own, the cap keeps the guarantee explicit for anyone
+# who changes the fraction later: two lands can sum to at most 0.7 x pitch.
 LAND_CAP = 0.35
 
 
 def printed_land(pitch, angle=90.0):
-    """Land width for the printed form: one extrusion width where the pitch
-    can afford it, a near-sharp V where it cannot.
+    """Land width for the printed form: NEAR-TRIANGULAR, a pure fraction of
+    pitch.
 
-    THE LAND YIELDS TO THE DEPTH. Every term competes for the same budget,
+    The 90 degree printed thread is deliberately a near-sharp V. The lands
+    exist only to avoid a mathematically sharp edge -- which form.cutter_points
+    rejects outright, because a zero-width tip is the tangency case where
+    consecutive turns of the sweep touch -- not to produce a flat anyone can
+    measure. At 0.021 x pitch they are 0.08mm on a 3.8 pitch and 0.026mm on a
+    1.25, which is what printed_threads itself runs and what it prints fine.
+
+    THE LAND YIELDS TO THE DEPTH, always. Every term competes for one budget,
 
         pitch = crest_land + root_land + 2 * depth * tan(angle / 2)
 
-    so a land floored unconditionally at NOZZLE buys its printable flat
-    straight out of the groove. Measured across the whole ISO coarse table,
-    an unconditional floor left the thread shallower than one extrusion
-    width at EVERY size up to and including M10 -- 0.105mm of depth on
-    M4x0.7, a quarter of a nozzle, which no slicer will resolve. That
-    inverts the floor's own purpose: it guarantees a printable flat by
-    producing an unprintable groove. Depth is what carries the load, so
-    depth wins.
+    so any width spent on a land comes straight out of the groove. An earlier
+    version floored this at NOZZLE to guarantee a printable flat, and it
+    inverted its own purpose: measured across the whole ISO coarse table it
+    left the thread shallower than one extrusion width at EVERY size up to
+    and including M10 -- 0.105mm of depth on M4x0.7, a quarter of a nozzle,
+    which no slicer resolves. It bought a printable flat by producing an
+    unprintable groove. Depth carries the load; depth wins.
 
-    The result keeps the NOZZLE floor everywhere it is actually affordable
-    (M12 and up at 90 degrees) and falls back towards printed_threads' own
-    near-sharp 0.021 x pitch below that -- which is what printed_threads
-    itself runs, at 0.08mm, well under one extrusion width, and prints fine.
+    `angle` is accepted for signature stability and deliberately unused: the
+    land is now a pure fraction of pitch, independent of the flank angle.
     """
-    tan = math.tan(math.radians(angle / 2.0))
-    # What the pitch can spare while still leaving one extrusion width of
-    # groove. Goes negative at fine pitches, where no land is affordable.
-    for_depth = (pitch - 2.0 * NOZZLE * tan) / 2.0
-    land = min(max(LAND_FRACTION * pitch, NOZZLE), for_depth,
-               LAND_CAP * pitch)
-    # Never below the near-sharp fraction, and never zero or negative:
-    # form.cutter_points rejects a mathematically sharp edge outright.
-    return max(land, LAND_FRACTION * pitch)
+    return LAND_FRACTION * pitch
 
 
 def form_defaults(form_name, pitch, mode=form.INTERNAL):

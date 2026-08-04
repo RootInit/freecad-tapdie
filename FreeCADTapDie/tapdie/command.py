@@ -79,6 +79,7 @@ class ThreadTaskPanel(object):
         # pitch"), and nothing in the dialog could recover it.
         self.angle = QtGui.QDoubleSpinBox()
         self.angle.setRange(10.5, 169.5)
+        self.angle.setSingleStep(5.0)
         self.angle.setDecimals(2)
         self.angle.setSuffix(" deg")
         self.angle.setToolTip(
@@ -88,18 +89,18 @@ class ThreadTaskPanel(object):
         layout.addRow("Angle", self.angle)
 
         self.root_land = QtGui.QDoubleSpinBox()
-        self.root_land.setRange(0.001, 10.0)
+        self.root_land.setRange(0.0005, 100.0)
         self.root_land.setDecimals(4)
-        self.root_land.setSingleStep(0.01)
+        self.root_land.setSingleStep(0.005)
         self.root_land.setToolTip(
             "Flat at the bottom of the groove (the thread's root). Keeps "
             "the MATING part's crest printable.")
         layout.addRow("Root land", self.root_land)
 
         self.crest_land = QtGui.QDoubleSpinBox()
-        self.crest_land.setRange(0.001, 10.0)
+        self.crest_land.setRange(0.0005, 100.0)
         self.crest_land.setDecimals(4)
-        self.crest_land.setSingleStep(0.01)
+        self.crest_land.setSingleStep(0.005)
         self.crest_land.setToolTip(
             "Flat left on the surface between grooves (the crest). Keeps "
             "THIS part's crest printable. Not the same job as the root "
@@ -107,19 +108,21 @@ class ThreadTaskPanel(object):
         layout.addRow("Crest land", self.crest_land)
 
         self.diameter = QtGui.QDoubleSpinBox()
-        self.diameter.setRange(0.5, 500.0)
+        self.diameter.setRange(0.1, 1000.0)
+        self.diameter.setSingleStep(0.5)
         self.diameter.setDecimals(3)
         self.diameter.setValue(defaults["Diameter"])
         layout.addRow("Diameter", self.diameter)
 
         self.pitch = QtGui.QDoubleSpinBox()
-        self.pitch.setRange(0.1, 20.0)
+        self.pitch.setRange(0.05, 50.0)
+        self.pitch.setSingleStep(0.25)
         self.pitch.setDecimals(3)
         self.pitch.setValue(defaults["Pitch"])
         layout.addRow("Pitch", self.pitch)
 
         self.length = QtGui.QDoubleSpinBox()
-        self.length.setRange(0.5, 1000.0)
+        self.length.setRange(0.05, 2000.0)
         self.length.setDecimals(3)
         self.length.setValue(defaults["Length"])
         layout.addRow("Length", self.length)
@@ -135,7 +138,7 @@ class ThreadTaskPanel(object):
         layout.addRow("Direction", self.direction)
 
         self.clearance = QtGui.QDoubleSpinBox()
-        self.clearance.setRange(0.0, 2.0)
+        self.clearance.setRange(0.0, 5.0)
         self.clearance.setDecimals(3)
         self.clearance.setSingleStep(0.01)
         self.clearance.setValue(0.12)
@@ -147,7 +150,7 @@ class ThreadTaskPanel(object):
         # r=1.0 and the preview simply refused. defaults_for now scales it
         # to the bore as well.
         self.overrun = QtGui.QDoubleSpinBox()
-        self.overrun.setRange(0.01, 20.0)
+        self.overrun.setRange(0.01, 100.0)
         self.overrun.setDecimals(3)
         self.overrun.setSingleStep(0.1)
         self.overrun.setValue(defaults.get("Overrun", 1.0))
@@ -165,6 +168,21 @@ class ThreadTaskPanel(object):
             "An end that butts against adjacent material is always faced "
             "off, regardless of this.")
         layout.addRow("Flush ends", self.flush_ends)
+
+        self.start_angle = QtGui.QDoubleSpinBox()
+        self.start_angle.setRange(-360.0, 360.0)
+        self.start_angle.setDecimals(2)
+        self.start_angle.setSingleStep(15.0)
+        self.start_angle.setSuffix(" deg")
+        self.start_angle.setWrapping(True)
+        self.start_angle.setValue(0.0)
+        self.start_angle.setToolTip(
+            "Where the thread starts, around the axis. Use it to line a "
+            "thread up with a flat, a hole or another thread.\n"
+            "An internal thread is already clocked half a pitch round from "
+            "an external one, so a nut and bolt cut with the same settings "
+            "mate as they stand -- this is your adjustment on top of that.")
+        layout.addRow("Start angle", self.start_angle)
 
         self.left_handed = QtGui.QCheckBox()
         layout.addRow("Left handed", self.left_handed)
@@ -186,7 +204,7 @@ class ThreadTaskPanel(object):
             widget.currentTextChanged.connect(self._touch)
         for widget in (self.diameter, self.pitch, self.length, self.clearance,
                        self.overrun, self.angle, self.root_land,
-                       self.crest_land):
+                       self.crest_land, self.start_angle):
             widget.valueChanged.connect(self._touch)
         for widget in (self.left_handed, self.flush_ends):
             widget.toggled.connect(self._touch)
@@ -235,6 +253,7 @@ class ThreadTaskPanel(object):
             "Direction": self.direction.currentText(),
             "Clearance": self.clearance.value(),
             "Overrun": self.overrun.value(),
+            "StartAngle": self.start_angle.value(),
             "FlushEnds": self.flush_ends.isChecked(),
             "LeftHanded": self.left_handed.isChecked(),
         }

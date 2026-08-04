@@ -123,19 +123,53 @@ class TestThreadCutterFeature(unittest.TestCase):
         for volume in volumes[1:]:
             self.assertAlmostEqual(volume, volumes[0], places=6)
 
-    def test_placement_carries_no_rotation(self):
+    def test_placement_never_tips_the_cutter_off_its_axis(self):
         """Direction places the run by translation alone.
 
         The old Reversed used a 180-about-X rotation to run the other way
         while staying centred, which also flipped which physical end the
         builder frame's 'near' end meant. Direction needs no rotation, and
         _detect_free_ends depends on that.
+
+        The placement DOES now carry a rotation about the axis -- that is
+        StartAngle plus the half-pitch clocking that mates an internal
+        thread with an external one -- so what must hold is that the axis of
+        that rotation is Z and nothing else. A rotation about Z slides the
+        helix along itself; a rotation about anything else points the cutter
+        somewhere new.
         """
         for direction in form.DIRECTIONS:
-            obj = self._cutter(Direction=direction)
-            self.assertAlmostEqual(obj.Placement.Rotation.Angle, 0.0,
-                                   places=9, msg="direction %s" % direction)
-            self.doc.removeObject(obj.Name)
+            for mode in (form.INTERNAL, form.EXTERNAL):
+                obj = self._cutter(Direction=direction, Mode=mode)
+                rotation = obj.Placement.Rotation
+                where = "direction %s, mode %s" % (direction, mode)
+                if abs(rotation.Angle) > 1e-9:
+                    axis = rotation.Axis
+                    self.assertAlmostEqual(abs(axis.z), 1.0, places=9,
+                                           msg="tipped off Z: %s" % where)
+                    self.assertAlmostEqual(axis.x, 0.0, places=9, msg=where)
+                    self.assertAlmostEqual(axis.y, 0.0, places=9, msg=where)
+                self.doc.removeObject(obj.Name)
+
+    def test_an_internal_thread_is_clocked_half_a_pitch_from_an_external(self):
+        """Otherwise the two ridges collide and the pair will not mate.
+
+        Both cutters carve their groove at azimuth 0, so both parts keep
+        their ridge half a pitch from it -- and assembled coaxially those
+        ridges land on top of each other.
+        """
+        internal = self._cutter(Mode=form.INTERNAL)
+        external = self._cutter(Mode=form.EXTERNAL, SurfaceRadius=8.2597)
+        gap = (internal.Placement.Rotation.Angle
+               - external.Placement.Rotation.Angle)
+        self.assertAlmostEqual(abs(math.degrees(gap)), 180.0, places=6)
+
+    def test_start_angle_adds_to_the_mating_clock_in_both_modes(self):
+        for mode, base in ((form.EXTERNAL, 0.0), (form.INTERNAL, 180.0)):
+            for extra in (0.0, 30.0, 90.0):
+                self.assertAlmostEqual(
+                    form.start_phase(mode, extra), base + extra, places=9,
+                    msg="mode %s extra %.0f" % (mode, extra))
 
     def test_an_unknown_direction_is_rejected(self):
         # App::PropertyEnumeration refuses a value outside its own list, so
@@ -1169,14 +1203,27 @@ class TestCreateThread(unittest.TestCase):
                                      "REVERSE reached above the anchor")
 
     def test_every_direction_places_by_translation_alone(self):
+        """Direction must not rotate the cutter relative to its own frame.
+
+        The thread's phase (StartAngle plus the internal half-pitch clock)
+        is a rotation about the axis and is expected; what must not vary is
+        anything else. Compared across directions rather than against zero,
+        so the phase cancels and only a Direction-induced rotation shows.
+        """
+        placements = {}
         for direction in form.DIRECTIONS:
             base = self._bored_block()
             face = self._bore_face(base, 3.4)
             cutter_obj = api.create_thread(
                 self.doc, base, face, {"Direction": direction})[0]
+            placements[direction] = cutter_obj.Placement.Rotation
+        reference = placements[form.BOTH]
+        for direction, rotation in placements.items():
+            delta = reference.inverted().multiply(rotation)
             self.assertAlmostEqual(
-                cutter_obj.Placement.Rotation.Angle, 0.0, places=6,
-                msg="direction %s introduced a rotation" % direction)
+                delta.Angle, 0.0, places=6,
+                msg="direction %s introduced a rotation of its own"
+                    % direction)
 
 
 class TestUndoRemovesTheWholeThread(unittest.TestCase):

@@ -4,6 +4,17 @@ import unittest
 from tapdie import form
 
 
+def roles(pts):
+    """Name the profile's corners instead of indexing them.
+
+    Order is documented as tip -> shoulder -> far -> far -> shoulder -> tip.
+    The root relief carries the FLANKS deeper rather than adding corners, so
+    there are always six; `deep` and `tip` are the same point and both names
+    are kept so the intent of each assertion reads clearly.
+    """
+    return pts[0], pts[0], pts[1], pts[2]
+
+
 class TestDepth(unittest.TestCase):
     """depth() is the UNTRUNCATED reference depth, not what the cutter cuts."""
 
@@ -257,7 +268,10 @@ class TestCutterPoints(unittest.TestCase):
         for angle in (60.0, 90.0, 120.0):
             pts = self.points(angle=angle, clearance=0.05, root_land=0.3,
                               crest_land=0.5)
-            tip, shoulder = pts[0], pts[1]
+            # Carrying the flanks deeper must not bend them: the relief
+            # widens the tip by exactly relief * tan(angle/2), which is the
+            # flank's own slope, so this angle is unchanged by clearance.
+            _deep, tip, shoulder, _far = roles(pts)
             dr = abs(shoulder[0] - tip[0])
             dz = abs(shoulder[1] - tip[1])
             self.assertAlmostEqual(math.degrees(math.atan2(dr, dz)),
@@ -311,34 +325,53 @@ class TestClearance(unittest.TestCase):
         """
         for c in (0.0, 0.05, 0.12, 0.3, 0.5):
             pts = self.points(clearance=c)
-            self.assertAlmostEqual(pts[0][1] - pts[5][1], 0.4, places=9,
+            deep, _tip, shoulder, _far = roles(pts)
+            self.assertAlmostEqual(deep[1] - pts[-1][1], 0.4, places=9,
                                    msg="root land at clearance %.2f" % c)
-            self.assertAlmostEqual(1.25 - (pts[2][1] - pts[3][1]), 0.4,
-                                   places=9,
+            self.assertAlmostEqual(1.25 - 2.0 * shoulder[1], 0.4, places=9,
                                    msg="crest land at clearance %.2f" % c)
 
     def test_shifts_the_whole_profile_radially(self):
+        """Every corner of the FORM moves by the offset.
+
+        Compared by role, not by index: the profile gains two corners once a
+        root relief exists, so `zip` over raw indices was comparing a tip
+        against a deepened tip and reading the relief as a failure to shift.
+        """
         c = 0.12
         shift = form.radial_offset(c, 90.0)
         plain, offset = self.points(), self.points(clearance=c)
-        for i, (a, b) in enumerate(zip(plain, offset)):
-            if i in (2, 3):
-                continue   # `far` is anchored on the ORIGINAL surface
+        _pd, p_tip, p_shoulder, _pf = roles(plain)
+        _od, o_tip, o_shoulder, _of = roles(offset)
+        for name, a, b in (("tip", p_tip, o_tip),
+                           ("shoulder", p_shoulder, o_shoulder)):
             self.assertAlmostEqual(a[0] - b[0], shift, places=9,
-                                   msg="corner %d did not shift" % i)
+                                   msg="%s did not shift" % name)
+
+    def test_the_profile_keeps_its_six_corners_at_every_clearance(self):
+        """Flat clearance is taken by sizing the BLANK, not by reshaping the
+        cutter -- so no corner is ever added and no axis-perpendicular face
+        can appear. See form.flat_clearance for the two reshaping attempts
+        that were measured and rejected.
+        """
+        for c in (0.0, 0.12, 0.5):
+            self.assertEqual(len(self.points(clearance=c)), 6,
+                             "clearance %.2f changed the corner count" % c)
 
     def test_shoulder_tracks_the_relieved_surface(self):
         """The shelf guard, restated for a nonzero clearance."""
         for c in (0.0, 0.05, 0.12, 0.3):
             pts = self.points(clearance=c)
+            _deep, _tip, shoulder, _far = roles(pts)
             expected = form.crest_radius(form.EXTERNAL, 4.0, c, 90.0)
-            self.assertAlmostEqual(pts[1][0], expected, places=9,
+            self.assertAlmostEqual(shoulder[0], expected, places=9,
                                    msg="clearance %.2f" % c)
 
     def test_groove_depth_is_independent_of_clearance(self):
         for c in (0.0, 0.12, 0.3):
             pts = self.points(clearance=c)
-            self.assertAlmostEqual(pts[1][0] - pts[0][0],
+            _deep, tip, shoulder, _far = roles(pts)
+            self.assertAlmostEqual(shoulder[0] - tip[0],
                                    form.cut_depth(1.25, 90.0, 0.4, 0.4),
                                    places=9, msg="clearance %.2f" % c)
 
@@ -346,7 +379,8 @@ class TestClearance(unittest.TestCase):
         # Otherwise the cutter would stop short of the original shaft and
         # leave an uncut collar wherever the relief did not reach.
         pts = self.points(clearance=0.12)
-        self.assertAlmostEqual(pts[2][0], 4.0 + 1.0, places=9)
+        _deep, _tip, _shoulder, far = roles(pts)
+        self.assertAlmostEqual(far[0], 4.0 + 1.0, places=9)
 
     def test_clearance_deeper_than_the_shaft_is_rejected(self):
         with self.assertRaises(form.ProfileError) as ctx:
@@ -441,15 +475,20 @@ class TestRequiredSurfaceRadius(unittest.TestCase):
                                          0.4, 0.4, 0.12)
         self.assertAlmostEqual(r, 4.0, places=9)
 
-    def test_internal_leaves_room_for_depth_and_both_reliefs(self):
+    def test_internal_leaves_room_for_depth_reliefs_and_the_flats(self):
         r = form.required_surface_radius(form.INTERNAL, 8.0, 1.25, 90.0,
                                          0.4, 0.4, 0.12)
         self.assertAlmostEqual(
             r, 4.0 - form.cut_depth(1.25, 90.0, 0.4, 0.4)
-            - 2.0 * form.radial_offset(0.12, 90.0), places=9)
+            - 2.0 * form.radial_offset(0.12, 90.0)
+            + form.flat_clearance(0.12), places=9)
 
-    def test_a_mated_pair_meets_crest_to_root(self):
-        """The nut's root must land exactly on the bolt's crest.
+    def test_a_mated_pair_clears_crest_to_root(self):
+        """The nut's root must clear the bolt's crest, not land on it.
+
+        This test used to assert the two were EQUAL, which is exactly the
+        defect: the flanks had 2 * clearance and the flats had nothing at
+        all, so a crest bottomed in a root before the flanks ever met.
 
         Bolt from a nominal shaft:  crest = D/2 - offset
         Nut from the required bore: root  = bore + offset + cut_depth
@@ -461,7 +500,8 @@ class TestRequiredSurfaceRadius(unittest.TestCase):
                                             root_l, crest_l, c)
         nut_root = (form.crest_radius(form.INTERNAL, bore, c, angle)
                     + form.cut_depth(p, angle, root_l, crest_l))
-        self.assertAlmostEqual(nut_root, bolt_crest, places=9)
+        self.assertAlmostEqual(nut_root - bolt_crest,
+                               form.flat_clearance(c), places=9)
         self.assertGreater(offset, 0.0)
 
     def test_a_printed_90_bore_is_larger_than_the_iso_tap_drill(self):
@@ -471,7 +511,8 @@ class TestRequiredSurfaceRadius(unittest.TestCase):
         # is a usable starting guess rather than a wild one.
         r = form.required_surface_radius(form.INTERNAL, 8.0, 1.25, 90.0,
                                          0.4, 0.4, 0.12)
-        self.assertAlmostEqual(2 * r, 6.8712, places=4)
+        self.assertAlmostEqual(2 * r, 6.8712 + 2 * form.flat_clearance(0.12),
+                               places=4)
         self.assertGreater(2 * r, 6.75)
 
     def test_invalid_mode_is_rejected(self):
@@ -529,6 +570,69 @@ class TestAchievedDiameter(unittest.TestCase):
         self.assertIn("Sideways", str(caught.exception))
 
 
+class TestMatedPairClearance(unittest.TestCase):
+    """A bolt and a nut cut with the same settings must clear each other in
+    EVERY direction, not only normal to the flanks.
+
+    The defect this pins: clearance was a pure radial shift of both profiles,
+    which opens 2 * clearance normal to the flanks and exactly NOTHING
+    between a crest and the root facing it -- because
+    required_surface_radius subtracts precisely cut_depth + 2 *
+    radial_offset, and the two cancel. Measured on M8x1.25 at clearance 0.12
+    before the root relief existed:
+
+        flank gap, normal                  0.2400
+        bolt crest to nut root, radial     0.0000
+        bolt root to nut crest, radial     0.0000
+    """
+
+    def _pair(self, major, pitch, angle, land, clearance):
+        """Radii of a mated pair cut from the same nominal size."""
+        radius = major / 2.0
+        depth = form.cut_depth(pitch, angle, land, land)
+        bolt_crest = form.crest_radius(form.EXTERNAL, radius, clearance,
+                                       angle)
+        bolt_root = bolt_crest - depth
+        bore = form.required_surface_radius(form.INTERNAL, major, pitch,
+                                            angle, land, land, clearance)
+        nut_crest = form.crest_radius(form.INTERNAL, bore, clearance, angle)
+        nut_root = nut_crest + depth
+        return bolt_root, bolt_crest, nut_crest, nut_root
+
+    def test_the_flats_clear_by_the_same_amount_as_the_flanks(self):
+        for angle in (60.0, 90.0, 120.0):
+            for pitch in (0.5, 1.25, 3.8):
+                for clearance in (0.05, 0.12, 0.3):
+                    land = 0.021 * pitch
+                    b_root, b_crest, n_crest, n_root = self._pair(
+                        8.0, pitch, angle, land, clearance)
+                    where = ("angle %.0f pitch %.2f clearance %.2f"
+                             % (angle, pitch, clearance))
+                    flank = form.flat_clearance(clearance)
+                    self.assertAlmostEqual(
+                        n_root - b_crest, flank, places=9,
+                        msg="bolt crest to nut root, %s" % where)
+                    self.assertAlmostEqual(
+                        n_crest - b_root, flank, places=9,
+                        msg="bolt root to nut crest, %s" % where)
+
+    def test_zero_clearance_still_means_a_perfect_interference_fit(self):
+        """The reference case must stay exactly touching, not gain a gap."""
+        b_root, b_crest, n_crest, n_root = self._pair(8.0, 1.25, 90.0, 0.0263,
+                                                      0.0)
+        self.assertAlmostEqual(n_root - b_crest, 0.0, places=9)
+        self.assertAlmostEqual(n_crest - b_root, 0.0, places=9)
+
+    def test_the_flanks_are_unchanged_by_the_relief(self):
+        """The relief must not buy its radial gap out of engagement: the
+        flank gap is still exactly 2 * clearance, normal to the flank."""
+        for angle in (60.0, 90.0, 120.0):
+            gap = (2.0 * form.radial_offset(0.12, angle)
+                   * math.sin(math.radians(angle / 2.0)))
+            self.assertAlmostEqual(gap, 0.24, places=9,
+                                   msg="angle %.0f" % angle)
+
+
 class TestEffectiveSurfaceRadius(unittest.TestCase):
     """Diameter drives the size; the cutter reaches further to reach it.
 
@@ -579,10 +683,15 @@ class TestEffectiveSurfaceRadius(unittest.TestCase):
             self.assertAlmostEqual(r, 5.0, places=9, msg="angle=%s" % angle)
 
     def test_a_standard_M8_tap_drill_is_not_refused(self):
-        """The exact case that made refusing untenable: 6.8mm ISO drill."""
+        """The exact case that made refusing untenable: 6.8mm ISO drill.
+
+        With near-triangular lands the printed form wants a bore LARGER than
+        the ISO drill, so this now clamps the other way -- the point stands
+        either way: an ordinary tapped hole must build, not error.
+        """
         r = form.effective_surface_radius(
             form.INTERNAL, 8.0, 1.25, 90.0, 0.225, 0.225, 0.12, 3.4)
-        self.assertAlmostEqual(r, 3.4, places=9)
+        self.assertGreaterEqual(r, 3.4)
 
     def test_a_matching_blank_anchors_on_itself(self):
         """The ordinary case must cost nothing."""

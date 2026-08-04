@@ -168,6 +168,15 @@ class ThreadCutter(object):
             p("App::PropertyLength", "Overrun", "Extent",
               "How far the cutter's parallel section runs past the surface")
             obj.Overrun = 1.0
+        if not hasattr(obj, "StartAngle"):
+            p("App::PropertyAngle", "StartAngle", "Thread",
+              "Angular position of the thread start, for lining a thread up "
+              "with something else. An internal thread is ALREADY clocked "
+              "half a pitch (180 deg) round from an external one, so a nut "
+              "and bolt cut with the same settings mate as they stand; this "
+              "is your adjustment on top of that, and means the same thing "
+              "in both modes")
+            obj.StartAngle = 0.0
         if not hasattr(obj, "LeftHanded"):
             p("App::PropertyBool", "LeftHanded", "Thread", "Left-hand thread")
             obj.LeftHanded = False
@@ -446,9 +455,23 @@ class ThreadCutter(object):
         # that rotation also flipped which physical end the builder frame's
         # "near" end meant, and _detect_free_ends had to carry a paragraph
         # explaining why it was nonetheless unaffected.
+        # PHASE BY ROTATION ABOUT THE AXIS, not by an axial shift.
+        #
+        # A helix maps onto itself under a rotation combined with an axial
+        # shift of the same fraction of a pitch, so either would clock the
+        # thread -- but only the rotation leaves the run's axial extent
+        # where Direction put it. Everything else in the cutter (the crest
+        # relief, both lead-in cones, the flush end planes) is a solid of
+        # revolution, so spinning the whole thing about Z moves the helical
+        # groove and nothing else.
+        #
+        # The 180 degrees that makes an internal thread mate with an
+        # external one lives in form.start_phase, not here.
         z_lo, _z_hi = form.span(obj.Direction, length_v)
-        offset = App.Placement(App.Vector(0, 0, z_lo - pitch_v),
-                               App.Rotation())
+        phase = form.start_phase(obj.Mode, obj.StartAngle.Value)
+        offset = App.Placement(
+            App.Vector(0, 0, z_lo - pitch_v),
+            App.Rotation(App.Vector(0, 0, 1), phase))
 
         obj.Shape = shape        # untransformed
 

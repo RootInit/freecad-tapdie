@@ -118,76 +118,72 @@ class TestFormDefaults(unittest.TestCase):
 
 
 class TestPrintedLandFloorAndCap(unittest.TestCase):
-    """The land takes one extrusion width where the pitch can afford it, and
-    yields to thread DEPTH where it cannot.
+    """The printed 90 form is NEAR-TRIANGULAR: the land is a pure fraction of
+    pitch, and every remaining micron goes to depth.
 
-    Both compete for the same budget --
-    pitch = crest + root + 2 * depth * tan(angle/2) -- so an unconditional
-    NOZZLE floor buys its printable flat straight out of the groove. It left
-    the thread shallower than one extrusion width at every size up to M10
-    (0.105mm of depth on M4x0.7), which no slicer resolves.
+    The lands exist only to avoid a mathematically sharp tip, which
+    form.cutter_points rejects because a zero-width tip is the tangency case
+    where consecutive turns of the sweep touch. They are not meant to be a
+    measurable flat.
+
+    An earlier version floored them at one extrusion width and it inverted
+    its own purpose: measured across this table it left the thread shallower
+    than 0.4mm at every size up to M10 -- 0.105mm on M4x0.7 -- buying a
+    printable flat by producing an unprintable groove.
     """
 
-    # (pitch, expected land, what bound it) -- every case pins an EXACT
-    # value, so a tweak to the constants is forced to update this
-    # deliberately rather than drifting.
+    # (pitch, expected land) -- pinned exactly, so a change to LAND_FRACTION
+    # has to update this deliberately rather than drifting.
     CASES = [
-        (0.50, 0.0105, "depth: pitch cannot afford any land"),
-        (0.70, 0.0147, "depth: pitch cannot afford any land"),
-        (1.00, 0.1000, "depth: exactly one extrusion width of groove"),
-        (1.25, 0.2250, "depth: exactly one extrusion width of groove"),
-        (1.75, 0.4000, "NOZZLE floor, now affordable"),
-        (3.80, 0.4000, "NOZZLE floor"),
+        (0.50, 0.0105),
+        (0.70, 0.0147),
+        (1.00, 0.0210),
+        (1.25, 0.0263),
+        (1.75, 0.0368),
+        (3.80, 0.0798),
     ]
 
     def test_land_at_each_reference_pitch(self):
-        for pitch, expected, why in self.CASES:
+        for pitch, expected in self.CASES:
             d = presets.form_defaults("Printed 90", pitch)
             self.assertAlmostEqual(
                 d["root_land"], expected, places=4,
-                msg="pitch %.2f: expected %.4f (%s), got %.4f"
-                    % (pitch, expected, why, d["root_land"]))
+                msg="pitch %.2f: expected %.4f, got %.4f"
+                    % (pitch, expected, d["root_land"]))
             self.assertAlmostEqual(d["crest_land"], expected, places=4)
 
-    def test_depth_reaches_one_extrusion_width_wherever_the_pitch_allows(self):
-        """The whole point of letting the land yield.
+    def test_the_land_is_a_pure_fraction_of_pitch_at_every_size(self):
+        for _diameter, pitch in presets.ISO_COARSE:
+            d = presets.form_defaults("Printed 90", pitch)
+            self.assertAlmostEqual(d["root_land"],
+                                   presets.LAND_FRACTION * pitch, places=9,
+                                   msg="pitch %.2f" % pitch)
 
-        At 90 degrees the flanks alone need 2 * depth of pitch, so a 0.4mm
-        groove needs 0.8mm of pitch before any land is affordable. Above
-        that threshold the depth must actually get there.
-        """
+    def test_the_groove_takes_almost_the_whole_pitch(self):
+        """Near-triangular: at 90 degrees the flanks alone eat 2 x depth, so
+        depth must come out just under half the pitch."""
         for _diameter, pitch in presets.ISO_COARSE:
             d = presets.form_defaults("Printed 90", pitch)
             depth = form.cut_depth(pitch, d["angle"], d["root_land"],
                                    d["crest_land"])
-            if pitch > 2.0 * presets.NOZZLE:
-                self.assertGreaterEqual(
-                    depth, presets.NOZZLE - 1e-9,
-                    "pitch %.2f can afford a %.2fmm groove but only cut "
-                    "%.4f" % (pitch, presets.NOZZLE, depth))
+            self.assertGreater(depth, 0.47 * pitch,
+                               "pitch %.2f only cut %.4f" % (pitch, depth))
+            self.assertLess(depth, 0.5 * pitch)
 
-    def test_a_pitch_too_fine_for_any_land_still_maximises_depth(self):
-        # Below 2 * NOZZLE * tan the groove cannot reach one extrusion width
-        # whatever we do, so the land drops to the near-sharp fraction and
-        # every remaining micron goes to depth.
-        for pitch in (0.5, 0.7, 0.8):
-            d = presets.form_defaults("Printed 90", pitch)
-            self.assertAlmostEqual(d["root_land"],
-                                   presets.LAND_FRACTION * pitch, places=6)
-
-    def test_the_land_never_costs_more_than_the_groove_is_worth(self):
-        # Regression on the specific numbers: M4x0.7 cut 0.105mm of depth
-        # under the unconditional floor, a quarter of a nozzle.
+    def test_depth_beats_the_old_floored_land_at_every_size(self):
+        """The regression this replaced: M4x0.7 cut 0.105mm under the
+        unconditional 0.4mm floor, a quarter of a nozzle."""
         d = presets.form_defaults("Printed 90", 0.7)
         depth = form.cut_depth(0.7, d["angle"], d["root_land"],
                                d["crest_land"])
         self.assertGreater(depth, 0.3)
 
-    def test_a_coarse_pitch_still_gets_the_full_extrusion_width_land(self):
-        # The floor is not abandoned -- only deferred to where it is
-        # affordable. printed_threads' own 3.8 pitch keeps it.
+    def test_a_coarse_pitch_stays_near_triangular_too(self):
+        """printed_threads' own 3.8 pitch runs 0.08mm, well under one
+        extrusion width, and prints fine."""
         d = presets.form_defaults("Printed 90", 3.8)
-        self.assertAlmostEqual(d["root_land"], presets.NOZZLE, places=6)
+        self.assertAlmostEqual(d["root_land"], 0.0798, places=4)
+        self.assertLess(d["root_land"], presets.NOZZLE)
 
     def test_land_sum_never_reaches_the_pitch_for_any_ISO_COARSE_pitch(self):
         # form.cutter_points rejects root_land + crest_land >= pitch. With

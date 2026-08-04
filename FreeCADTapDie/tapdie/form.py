@@ -135,6 +135,75 @@ def depth(form_name, pitch, angle, mode):
     return pitch / (2.0 * _tan(angle))
 
 
+# Half a pitch, expressed as rotation. A helix maps onto itself under a
+# rotation about its axis combined with an axial shift of the same fraction
+# of the pitch, so 180 degrees IS half a pitch of phase -- and phasing by
+# rotation leaves the run's axial extent alone, which an axial shift would
+# not.
+MATING_PHASE = 180.0
+
+
+def start_phase(mode, start_angle):
+    """Angular position of the thread start, in degrees about the axis.
+
+    An internal thread is clocked HALF A PITCH away from an external one cut
+    from the same settings, because otherwise the two ridges collide.  Both
+    cutters carve their groove at azimuth 0, so both parts keep their ridge
+    half a pitch from it -- and assembled coaxially those ridges land on top
+    of each other.  Turning the internal cutter through 180 degrees puts its
+    groove where the external part's ridge is, and vice versa, so the pair
+    meshes with no axial offset at all.
+
+    `start_angle` is the user's own adjustment on top of that, so it means
+    the same thing in both modes and survives a change of Mode.
+    """
+    _check_mode(mode)
+    base = MATING_PHASE if mode == INTERNAL else 0.0
+    return base + start_angle
+
+
+def flat_clearance(clearance):
+    """Radial gap left between a crest and the root facing it.
+
+    WITHOUT THIS THE FLATS TOUCH. Clearance is a radial shift of the whole
+    profile (see crest_radius), which opens exactly 2 * clearance NORMAL TO
+    THE FLANKS and nothing at all between a crest and the root it faces --
+    required_surface_radius subtracted precisely cut_depth + 2 *
+    radial_offset, and the two cancelled. Measured on a mated M8x1.25 pair
+    at clearance 0.12, before this existed:
+
+        flank gap, normal                  0.2400
+        bolt crest to nut root, radial     0.0000
+        bolt root to nut crest, radial     0.0000
+        minimum gap anywhere               0.0000
+
+    On a printed thread that is the worst possible place to have no gap: the
+    crest is the least accurate feature an FDM machine makes, and a crest
+    bottoming in a root jams the pair before the flanks ever meet.
+
+    The gap is opened by making the internal blank this much larger, which
+    lifts the nut's crest AND its root together and leaves both profiles
+    untouched. Two shapelier-looking alternatives were tried and are both
+    wrong:
+
+      * a straight-sided slot at the tip of the cutter -- its walls are
+        perpendicular to the axis, which is the "shelf" this project already
+        spent a bug on, and it is only `root_land` wide (0.026mm on a
+        near-triangular 1.25 pitch), so no slicer would resolve it and the
+        clearance would exist in the model and never in the print;
+      * carrying the flanks deeper at their own angle -- impossible here.
+        The flanks CONVERGE toward the tip, so going deeper makes the tooth
+        narrower, not wider, and a near-triangular form has already run the
+        V as deep as the pitch allows. There is no room.
+
+    Measured with the simple version, same pair, at 2 * clearance:
+
+        flats gap                          0.2400
+        minimum gap anywhere               0.1697   (was 0.0000)
+    """
+    return 2.0 * clearance
+
+
 def cut_depth(pitch, angle, root_land, crest_land):
     """Radial depth of the groove, measured from the RELIEVED surface.
 
@@ -194,9 +263,13 @@ def required_surface_radius(mode, diameter, pitch, angle, root_land,
     _check_mode(mode)
     if mode == EXTERNAL:
         return diameter / 2.0
+    # + flat_clearance: without it the bore comes out at exactly the size
+    # that makes the nut's root land on the bolt's crest and its crest on
+    # the bolt's root, with zero radial gap at either. See flat_clearance.
     return (diameter / 2.0
             - cut_depth(pitch, angle, root_land, crest_land)
-            - 2.0 * radial_offset(clearance, angle))
+            - 2.0 * radial_offset(clearance, angle)
+            + flat_clearance(clearance))
 
 
 def effective_surface_radius(mode, diameter, pitch, angle, root_land,
@@ -265,9 +338,11 @@ def achieved_diameter(mode, pitch, angle, root_land, crest_land, clearance,
         # The shaft IS the major diameter; relief moves the crest inward from
         # it, which is what makes the fit a clearance one.
         return 2.0 * surface_radius
+    # Exact inverse of required_surface_radius, flat clearance included.
     return 2.0 * (surface_radius
                   + cut_depth(pitch, angle, root_land, crest_land)
-                  + 2.0 * radial_offset(clearance, angle))
+                  + 2.0 * radial_offset(clearance, angle)
+                  - flat_clearance(clearance))
 
 
 def cutter_points(mode, form_name, diameter, pitch, angle, root_land,
