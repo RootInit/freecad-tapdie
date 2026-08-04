@@ -53,6 +53,12 @@ the thread with it.
   blind bore's floor) and faced off flat with no lead-in chamfer, so the
   sweep's overrun does not gouge into the neighbour. Free ends get a 45°
   lead-in so the first turn is not a fragile knife edge.
+- **Diameter is a check, not a driver.** The thread profile is anchored on the
+  surface you selected, so the blank decides the size. If the two disagree the
+  dialog says what it will really cut and what blank the size you asked for
+  would need — it does not silently resize anything.
+- **Form → Custom** unlocks the included angle and both land widths. On a
+  preset they are computed from form, pitch and mode, and shown greyed.
 - **Known limitation:** one Ctrl-Z after creating a thread removes the cutter
   but leaves the `Part::Cut` behind. Delete it by hand. Measured, not
   theorised — see `tools/diag_undo.py`.
@@ -77,16 +83,25 @@ the thread with it.
 ```sh
 ./run_tests.sh pure   # profile maths and packaging; no FreeCAD needed
 ./run_tests.sh fc     # geometry tests inside the flatpak
-./run_tests.sh        # both
+./run_tests.sh diag   # the task panel, in an offscreen GUI
+./run_tests.sh        # all three
 ```
 
-The `fc` half assumes FreeCAD is installed as the
+The `fc` and `diag` halves assume FreeCAD is installed as the
 `org.freecad.FreeCAD` flatpak; edit `FC` in `run_tests.sh` otherwise.
 
-Diagnostics that need a GUI run offscreen and unattended:
+`diag` matters more than its size suggests: `freecadcmd` never runs
+`InitGui.py` and has no `FreeCADGui`, so command registration, the task panel,
+its undo transaction and the enabled state of a control are invisible to
+everything else. It has caught a preview showing stale geometry, a Cancel path
+that stranded objects, a cutter orphaned by a failed-then-corrected preview,
+and a set of controls that never enabled.
+
+`tools/` also holds standalone probes, each documenting the number it measured:
 
 ```sh
-flatpak run --env=QT_QPA_PLATFORM=offscreen org.freecad.FreeCAD tools/diag_preview.py
+python3 tools/probe_diameter.py                              # no FreeCAD needed
+flatpak run --command=freecadcmd org.freecad.FreeCAD tools/probe_chamfer_overreach.py
 ```
 
 ## License

@@ -565,6 +565,30 @@ class TestFreeEndDetection(unittest.TestCase):
                            App.Vector(-big / 2, -big / 2, z_lo))
         return shape.common(box).Volume
 
+    def test_a_base_with_a_null_shape_reads_as_abutting(self):
+        """An unevaluable probe must fail SAFE, like _end_is_free does.
+
+        feature.py's module docstring commits to this: a probe that cannot be
+        evaluated is treated as abutting, because gouging a neighbour is
+        destructive while a missing overrun merely leaves a plain collar.
+        _end_is_free honoured that; _detect_free_ends did not, and returned
+        the destructive reading for a base it could not measure.
+        """
+        ghost = self.doc.addObject("Part::Feature", "Ghost")   # null Shape
+        obj = feature.make_cutter(self.doc)
+        obj.SurfaceRadius = 4.0
+        obj.Length = 6.0
+        obj.AttachedTo = ghost
+        obj.LocalPlacement = App.Placement()
+        self.assertTrue(ghost.Shape.isNull(), "fixture: Ghost must be null")
+        self.assertEqual(feature._detect_free_ends(obj), (False, False))
+
+    def test_no_base_at_all_is_still_both_ends_free(self):
+        """The other direction: with nothing to gouge, nothing is clamped."""
+        obj = feature.make_cutter(self.doc)
+        self.assertIsNone(obj.AttachedTo)
+        self.assertEqual(feature._detect_free_ends(obj), (True, True))
+
     def test_hex_head_abutting_end_loses_no_material(self):
         """The exact regression: dieing a shaft against a hex head must not
         gouge into the head. Originally measured 48.5915mm3 removed from
@@ -591,6 +615,51 @@ class TestFreeEndDetection(unittest.TestCase):
         print("\n[free-end] material removed from hex head slab: %.4f mm3 "
               "(was 48.5915 mm3 before this fix)" % lost)
         self.assertAlmostEqual(lost, 0.0, places=3)
+
+    def test_a_chamfer_never_reaches_past_an_abutting_end(self):
+        """The clamp must bound the CHAMFERS too, not only the sweep.
+
+        A cone's axial reach EQUALS its radial depth (it is 45 degrees), so
+        on a run shorter than cut_depth + radial_offset it crosses the far
+        end plane -- and feature.py added the cones AFTER the clip, so
+        nothing bounded them. Measured before the fix: a 4mm stub against an
+        8mm shoulder, run [0, 1], chamfer reach 1.6697mm, cutter z-extent
+        [-0.6959, 1.0442], 0.3697mm eaten out of the shoulder. That is the
+        same defect class the abutting-end clamp exists to prevent.
+        """
+        stub = Part.makeCylinder(4.0, 1.0, App.Vector(0, 0, 0))
+        shoulder = Part.makeCylinder(8.0, 5.0, App.Vector(0, 0, -5.0))
+        base = self.doc.addObject("Part::Feature", "Stub")
+        base.Shape = stub.fuse(shoulder).removeSplitter()
+        self.doc.recompute()
+
+        obj = feature.make_cutter(self.doc)
+        obj.Mode = form.EXTERNAL
+        obj.ThreadForm = form.PRINTED
+        obj.Pitch = 3.8
+        obj.SurfaceRadius = 4.0
+        obj.Length = 1.0
+        obj.Direction = form.FORWARD          # run occupies z in [0, +1]
+        obj.LeadIn = True
+        obj.FlushEnds = True
+        obj.AttachedTo = base
+        obj.LocalPlacement = App.Placement()
+        self.doc.recompute()
+
+        self.assertFalse(obj.NearEndFree, "fixture: z=0 abuts the shoulder")
+        self.assertTrue(obj.FarEndFree, "fixture: z=+1 is open air")
+        points = form.cutter_points(
+            obj.Mode, obj.ThreadForm, obj.Diameter.Value, obj.Pitch.Value,
+            obj.Angle.Value, obj.RootLand.Value, obj.CrestLand.Value,
+            obj.Clearance.Value, obj.SurfaceRadius.Value, obj.Overrun.Value)
+        reach = abs(points[0][0] - obj.SurfaceRadius.Value)
+        self.assertGreater(reach, obj.Length.Value,
+                           "fixture stopped being the overreaching case")
+        box = obj.Shape.optimalBoundingBox()
+        self.assertGreaterEqual(
+            box.ZMin, -1e-6,
+            "the chamfer reached %.4fmm past the abutting end at z=0"
+            % -box.ZMin)
 
     def test_hex_head_thread_reaches_the_shoulder(self):
         """Threads must be fully formed right up to the shoulder plane, not
@@ -1108,6 +1177,107 @@ class TestCreateThread(unittest.TestCase):
             self.assertAlmostEqual(
                 cutter_obj.Placement.Rotation.Angle, 0.0, places=6,
                 msg="direction %s introduced a rotation" % direction)
+
+
+class TestDiagnosticsAndChecks(unittest.TestCase):
+    """The three things the 2026-08-04 review found reporting nothing:
+    a swallowed error message, an inert Diameter, and a fixed Overrun."""
+
+    def setUp(self):
+        self.doc = App.newDocument("diagtest", hidden=True)
+
+    def tearDown(self):
+        App.closeDocument(self.doc.Name)
+
+    # ---- the real error reaches the caller ------------------------------
+
+    def test_the_real_profile_error_reaches_the_caller(self):
+        """A generic "check Diameter, Pitch and the lands" is not a diagnosis.
+
+        The overrun-through-the-axis case is the motivating one, measured on
+        a 0.9mm bore: none of the three things the old message named can fix
+        it, and the one it named first does not affect the geometry at all.
+        """
+        obj = feature.make_cutter(self.doc)
+        obj.Mode = form.INTERNAL
+        obj.SurfaceRadius = 0.9
+        obj.Overrun = 1.0
+        self.doc.recompute()
+        with self.assertRaises(api.ThreadError) as caught:
+            api._validate(obj, None)
+        self.assertIn("overrun", str(caught.exception))
+        self.assertIn("0.9000", str(caught.exception))
+
+    def test_a_successful_rebuild_clears_the_previous_error(self):
+        obj = feature.make_cutter(self.doc)
+        obj.Mode = form.INTERNAL
+        obj.SurfaceRadius = 0.9
+        self.doc.recompute()
+        self.assertIsNotNone(obj.Proxy.last_error)
+        obj.SurfaceRadius = 8.2597
+        self.doc.recompute()
+        self.assertIsNone(obj.Proxy.last_error)
+        api._validate(obj, None)      # must not raise
+
+    # ---- Diameter is a real check ---------------------------------------
+
+    def test_a_matching_blank_reports_nothing(self):
+        obj = feature.make_cutter(self.doc)
+        obj.Mode = form.EXTERNAL
+        obj.Diameter = 8.0
+        obj.SurfaceRadius = 4.0
+        self.doc.recompute()
+        self.assertIsNone(api.diameter_note(obj))
+
+    def test_a_mismatched_blank_says_what_it_will_actually_cut(self):
+        """Finding 1: Diameter was passed to cutter_points and never read.
+
+        Measured identical profiles for Diameter 8.0 and 24.0, so a user
+        threading a 20mm shaft could ask for 16 and get 20 in silence.
+        """
+        obj = feature.make_cutter(self.doc)
+        obj.Mode = form.EXTERNAL
+        obj.Diameter = 16.0
+        obj.SurfaceRadius = 10.0      # a 20mm shaft
+        self.doc.recompute()
+        note = api.diameter_note(obj)
+        self.assertIsNotNone(note)
+        self.assertIn("20.00", note)
+        self.assertIn("16.00", note)
+
+    def test_a_tap_drilled_M8_bore_is_within_tolerance(self):
+        """0.08mm of overshoot is real but must not nag on the common case.
+
+        A standard 6.6mm M8 tap drill legally yields 8.08mm on the printed
+        form. Warning about that on the commonest selection there is would
+        train the user to ignore the line.
+        """
+        obj = feature.make_cutter(self.doc)
+        obj.Mode = form.INTERNAL
+        obj.ThreadForm = form.PRINTED
+        obj.Pitch = 1.25
+        obj.Diameter = 8.0
+        obj.SurfaceRadius = 3.3        # 6.6mm tap drill
+        self.doc.recompute()
+        self.assertIsNone(api.diameter_note(obj))
+
+    # ---- Overrun scales to the bore -------------------------------------
+
+    def _circle(self, radius, mode):
+        return selection.Circle(
+            centre=App.Vector(), axis=App.Vector(0, 0, 1), radius=radius,
+            mode=mode, length=10.0, direction=form.BOTH)
+
+    def test_a_small_bore_gets_an_overrun_it_can_survive(self):
+        """Overrun 1.0 reaches through the axis of any bore under r=1, and
+        the dialog had no control able to fix it."""
+        self.assertLess(
+            api.defaults_for(self._circle(0.9, form.INTERNAL))["Overrun"], 0.9)
+
+    def test_a_shaft_keeps_the_full_overrun(self):
+        """For a shaft the overrun runs OUTWARD, so the radius never binds."""
+        self.assertEqual(
+            api.defaults_for(self._circle(0.9, form.EXTERNAL))["Overrun"], 1.0)
 
 
 if __name__ == "__main__":

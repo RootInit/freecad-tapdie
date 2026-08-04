@@ -73,13 +73,23 @@ def _detect_free_ends(obj):
     """
     base = getattr(obj, "AttachedTo", None)
     if base is None:
+        # Nothing to gouge: an unattached ThreadCutter -- which is how most of
+        # this module's own unit tests build one -- keeps the behaviour that
+        # predates this detection.
         return True, True
+    # From here there IS a base. Anything about it we cannot measure must read
+    # as ABUTTING, matching _end_is_free's policy and the module docstring
+    # above. This used to return the free reading, which is the destructive
+    # direction: it lets the overrun cut into material we merely failed to
+    # see. CLAUDE.md's rule for isInside probes -- audit BOTH directions,
+    # because the one that fails open passes silently while the tool eats the
+    # part -- applies to the callers of a probe as much as to the probe.
     try:
         base_shape = base.Shape
     except Exception:
-        return True, True
+        return False, False
     if base_shape is None or base_shape.isNull():
-        return True, True
+        return False, False
 
     anchor = base.Placement.multiply(obj.LocalPlacement)
     surface_radius = obj.SurfaceRadius.Value
@@ -98,6 +108,10 @@ class ThreadCutter(object):
 
     def __init__(self, obj):
         self.Type = "ThreadCutter"
+        # Set before add_properties: assigning a property fires onChanged,
+        # which can reach execute() on some paths, and _check_recomputed
+        # reads this attribute unconditionally.
+        self.last_error = None
         self.add_properties(obj)
         obj.Proxy = self
         # _apply_preset only runs reactively from onChanged; nothing fires it
@@ -199,6 +213,12 @@ class ThreadCutter(object):
             obj.setEditorMode("FarEndFree", 1)    # read-only
 
     def onDocumentRestored(self, obj):
+        # A proxy restored from a saved file did not run __init__, so it has
+        # no last_error; api._check_recomputed would then read the attribute
+        # off a restored object and raise AttributeError instead of the
+        # ThreadError it exists to raise.
+        if not hasattr(self, "last_error"):
+            self.last_error = None
         self.add_properties(obj)
 
     def _apply_preset(self, obj):
@@ -225,6 +245,26 @@ class ThreadCutter(object):
             self._apply_preset(obj)
 
     def execute(self, obj):
+        # RECORD WHAT WENT WRONG ON THE WAY PAST.
+        #
+        # FreeCAD swallows whatever execute() raises: it marks the object
+        # Invalid and writes the traceback to the Report view, and the
+        # exception never reaches doc.recompute()'s caller. api._validate
+        # therefore had nothing but obj.State to go on and had to GUESS at a
+        # cause -- it told a user whose 0.9mm bore was smaller than the 1.0mm
+        # Overrun to "check Diameter, Pitch and the lands", none of which can
+        # fix that, and the first of which does not affect the geometry at
+        # all. The real message ("cutter overrun 1.0000 reaches through the
+        # axis from a bore at r=0.9000") existed the whole time and was
+        # thrown away.
+        try:
+            self._build_shape(obj)
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+        self.last_error = None
+
+    def _build_shape(self, obj):
         points = form.cutter_points(
             obj.Mode, obj.ThreadForm, obj.Diameter.Value, obj.Pitch.Value,
             obj.Angle.Value, obj.RootLand.Value, obj.CrestLand.Value,
@@ -285,15 +325,26 @@ class ThreadCutter(object):
         # material. cutter.lead_in_cone builds it as a revolved profile (one
         # construction for both Mode values -- see its docstring for why an
         # internal/external special-case used to exist here and was retired
-        # after it failed to fuse at ordinary dimensions). The chamfer sits
-        # entirely within [feature_lo, feature_hi], never in the overrun
-        # band, so it does not interact with the clamp above.
+        # after it failed to fuse at ordinary dimensions).
+        #
+        # THE CONES ARE CLAMPED TO THE SAME RANGE AS THE SWEEP. A cone's
+        # axial reach EQUALS its radial depth, because it is 45 degrees --
+        # so on a run shorter than cut_depth + radial_offset it crosses the
+        # OPPOSITE end plane. This comment used to assert the reverse ("the
+        # chamfer sits entirely within [feature_lo, feature_hi]"), untested,
+        # and it was false: measured on a 4mm stub against an 8mm shoulder
+        # with a 1mm run at pitch 3.8, the cutter reached z=-0.6959 and took
+        # 0.3697mm out of the shoulder -- the very defect the abutting-end
+        # clamp above exists to prevent, reintroduced by the feature added
+        # after it. Where the run is long enough, which is every ordinary
+        # case, the clip is a no-op.
         # Crest relief: clearance is radial, so the blank is taken down (or
         # out) to the crest radius over exactly the threaded run before the
         # profile's own groove is cut. Added to the same compound as
         # everything else -- Part::Cut removes every solid in the tool.
         extras = []
         relief = cutter.crest_relief(
+            obj.Mode,
             obj.SurfaceRadius.Value,
             form.crest_radius(obj.Mode, obj.SurfaceRadius.Value,
                               obj.Clearance.Value, obj.Angle.Value),
@@ -303,16 +354,17 @@ class ThreadCutter(object):
 
         if obj.LeadIn and (near_free or far_free):
             tip_radius = points[0][0]
-            cones = []
+            reach = max(pt[0] for pt in points)
             if near_free:
-                cones.append(cutter.lead_in_cone(
-                    tip_radius, obj.SurfaceRadius.Value, feature_lo,
-                    into_material=True))
+                extras.append(cutter.clip_to_axial_range(
+                    cutter.lead_in_cone(tip_radius, obj.SurfaceRadius.Value,
+                                        feature_lo, into_material=True),
+                    z_keep_lo, z_keep_hi, reach))
             if far_free:
-                cones.append(cutter.lead_in_cone(
-                    tip_radius, obj.SurfaceRadius.Value, feature_hi,
-                    into_material=False))
-            extras.extend(cones)
+                extras.append(cutter.clip_to_axial_range(
+                    cutter.lead_in_cone(tip_radius, obj.SurfaceRadius.Value,
+                                        feature_hi, into_material=False),
+                    z_keep_lo, z_keep_hi, reach))
 
         if extras:
             # COMPOUND, not fuse.  A cutter carrying chamfers is legitimately

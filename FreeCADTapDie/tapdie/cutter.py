@@ -17,6 +17,8 @@ import FreeCAD as App
 import Part
 import Sketcher
 
+from . import form
+
 SCRATCH = "tapdie_scratch"
 
 XZ_PLANE = 4      # index into Body.Origin.OriginFeatures
@@ -163,7 +165,7 @@ def lead_in_cone(tip_radius, surface_radius, z_face, into_material):
     return solid
 
 
-def crest_relief(surface_radius, crest_radius, z_lo, z_hi, overrun):
+def crest_relief(mode, surface_radius, crest_radius, z_lo, z_hi, overrun):
     """A cylindrical shell that takes the surface down (or out) to the crest.
 
     Clearance is applied RADIALLY: relieve the blank, then anchor the thread
@@ -183,7 +185,17 @@ def crest_relief(surface_radius, crest_radius, z_lo, z_hi, overrun):
 
     Returns None when there is nothing to relieve, so a zero clearance costs
     nothing and adds no solid to the compound.
+
+    `mode` decides which way the shell spans.  It used to be INFERRED from
+    `crest_radius < surface_radius`, which is true for every input reachable
+    today -- but that means the function cannot tell "external with a
+    negative clearance" from "internal", and would then relieve a shaft
+    OUTWARDS, taking material from below its own surface.  The caller knows
+    the mode; re-deriving it from a subtraction bought nothing.
     """
+    if mode not in (form.INTERNAL, form.EXTERNAL):
+        raise CutterError(
+            "mode %r is not %s or %s" % (mode, form.INTERNAL, form.EXTERNAL))
     if z_hi <= z_lo:
         raise CutterError(
             "crest relief range [%.4f, %.4f] is empty or inverted"
@@ -197,10 +209,12 @@ def crest_relief(surface_radius, crest_radius, z_lo, z_hi, overrun):
 
     # Span from the relieved surface out past the original one, so the shell
     # certainly reaches material at every azimuth.
-    if crest_radius < surface_radius:            # EXTERNAL: shave the shaft
-        r_lo, r_hi = crest_radius, surface_radius + overrun
-    else:                                        # INTERNAL: open the bore
-        r_lo, r_hi = max(surface_radius - overrun, 1e-6), crest_radius
+    if mode == form.EXTERNAL:                    # shave the shaft
+        r_lo = min(crest_radius, surface_radius)
+        r_hi = surface_radius + overrun
+    else:                                        # open the bore
+        r_lo = max(min(surface_radius, crest_radius) - overrun, 1e-6)
+        r_hi = max(crest_radius, surface_radius)
 
     pts = [App.Vector(r_lo, 0.0, z_lo), App.Vector(r_hi, 0.0, z_lo),
            App.Vector(r_hi, 0.0, z_hi), App.Vector(r_lo, 0.0, z_hi)]

@@ -192,6 +192,31 @@ def required_surface_radius(mode, diameter, pitch, angle, root_land,
             - 2.0 * radial_offset(clearance, angle))
 
 
+def achieved_diameter(mode, pitch, angle, root_land, crest_land, clearance,
+                      surface_radius):
+    """Nominal major diameter this cutter really produces on `surface_radius`.
+
+    The exact inverse of required_surface_radius, and the check that makes
+    `Diameter` mean anything at all.  cutter_points anchors the profile on
+    the SURFACE and ignores `diameter` entirely -- deliberately, see there --
+    so a blank of the wrong size yields a correctly SHAPED thread of the
+    wrong SIZE, silently, until something computes this and compares.  It
+    went uncomputed: a review measured cutter_points returning byte-identical
+    profiles for Diameter 8.0 and 24.0, so a user threading a 20mm shaft
+    could ask for 16 and get 20 with nothing said.
+    """
+    if mode not in (INTERNAL, EXTERNAL):
+        raise ProfileError(
+            "mode %r is not %s or %s" % (mode, INTERNAL, EXTERNAL))
+    if mode == EXTERNAL:
+        # The shaft IS the major diameter; relief moves the crest inward from
+        # it, which is what makes the fit a clearance one.
+        return 2.0 * surface_radius
+    return 2.0 * (surface_radius
+                  + cut_depth(pitch, angle, root_land, crest_land)
+                  + 2.0 * radial_offset(clearance, angle))
+
+
 def cutter_points(mode, form_name, diameter, pitch, angle, root_land,
                   crest_land, clearance, surface_radius, overrun):
     """Six corners of the swept cutter as (radius, axial_offset) tuples.

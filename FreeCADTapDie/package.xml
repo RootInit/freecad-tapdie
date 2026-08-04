@@ -2,8 +2,8 @@
 <package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
   <name>TapDie</name>
   <description>Thread any cylinder by selecting a circular profile.</description>
-  <version>0.1.0</version>
-  <date>2026-08-02</date>
+  <version>0.1.1</version>
+  <date>2026-08-04</date>
   <maintainer email="root@init.cx">Alexander</maintainer>
   <license>LGPL-2.1-or-later</license>
   <!-- MUST be <workbench>, even though this addon adds no workbench of its

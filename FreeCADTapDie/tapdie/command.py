@@ -70,6 +70,42 @@ class ThreadTaskPanel(object):
         self.thread_form.addItems(list(form.FORMS))
         layout.addRow("Form", self.thread_form)
 
+        # Angle and the two lands are preset-driven, so they are shown but
+        # DISABLED unless Form is Custom -- mirroring the lock feature.py
+        # puts on the properties themselves. Without them Custom was a dead
+        # end: it froze whatever the last preset happened to leave, so
+        # picking Custom and then a finer pitch kept lands wider than the
+        # whole pitch, cutter_points refused ("leaves no flank within the
+        # pitch"), and nothing in the dialog could recover it.
+        self.angle = QtGui.QDoubleSpinBox()
+        self.angle.setRange(10.5, 169.5)
+        self.angle.setDecimals(2)
+        self.angle.setSuffix(" deg")
+        self.angle.setToolTip(
+            "Included angle. 90 puts every flank at exactly the 45 degree "
+            "overhang limit, which is the FDM optimum; ISO's 60 gives a 60 "
+            "degree overhang and droops when printed axis-vertical.")
+        layout.addRow("Angle", self.angle)
+
+        self.root_land = QtGui.QDoubleSpinBox()
+        self.root_land.setRange(0.001, 10.0)
+        self.root_land.setDecimals(4)
+        self.root_land.setSingleStep(0.01)
+        self.root_land.setToolTip(
+            "Flat at the bottom of the groove (the thread's root). Keeps "
+            "the MATING part's crest printable.")
+        layout.addRow("Root land", self.root_land)
+
+        self.crest_land = QtGui.QDoubleSpinBox()
+        self.crest_land.setRange(0.001, 10.0)
+        self.crest_land.setDecimals(4)
+        self.crest_land.setSingleStep(0.01)
+        self.crest_land.setToolTip(
+            "Flat left on the surface between grooves (the crest). Keeps "
+            "THIS part's crest printable. Not the same job as the root "
+            "land, so do not assume they should be equal.")
+        layout.addRow("Crest land", self.crest_land)
+
         self.diameter = QtGui.QDoubleSpinBox()
         self.diameter.setRange(0.5, 500.0)
         self.diameter.setDecimals(3)
@@ -105,6 +141,22 @@ class ThreadTaskPanel(object):
         self.clearance.setValue(0.12)
         layout.addRow("Clearance", self.clearance)
 
+        # Exposed because it can make a selection unbuildable and there was
+        # no way to correct it: for a bore the overrun runs INWARD, so the
+        # fixed 1.0mm default reached through the axis of anything under
+        # r=1.0 and the preview simply refused. defaults_for now scales it
+        # to the bore as well.
+        self.overrun = QtGui.QDoubleSpinBox()
+        self.overrun.setRange(0.01, 20.0)
+        self.overrun.setDecimals(3)
+        self.overrun.setSingleStep(0.1)
+        self.overrun.setValue(defaults.get("Overrun", 1.0))
+        self.overrun.setToolTip(
+            "How far the cutter's parallel section reaches past the surface "
+            "it is cutting.\nFor a bore this runs towards the axis, so it "
+            "must stay under the bore radius.")
+        layout.addRow("Overrun", self.overrun)
+
         self.flush_ends = QtGui.QCheckBox()
         self.flush_ends.setChecked(True)
         self.flush_ends.setToolTip(
@@ -132,19 +184,49 @@ class ThreadTaskPanel(object):
         self.stale = False
         for widget in (self.mode, self.thread_form, self.direction):
             widget.currentTextChanged.connect(self._touch)
-        for widget in (self.diameter, self.pitch, self.length, self.clearance):
+        for widget in (self.diameter, self.pitch, self.length, self.clearance,
+                       self.overrun, self.angle, self.root_land,
+                       self.crest_land):
             widget.valueChanged.connect(self._touch)
         for widget in (self.left_handed, self.flush_ends):
             widget.toggled.connect(self._touch)
 
+        self._sync_form_controls()
         self._build()
+
+    def _sync_form_controls(self):
+        """Enable Angle and the lands for Custom only, seeding from the preset.
+
+        Seeding is the point: an unseeded Custom is exactly how the dead end
+        happened. Leaving a coarse preset's 0.4mm lands in place against a
+        0.5mm pitch leaves no flank within the pitch at all, cutter_points
+        rejects it, and before these controls existed there was nothing the
+        user could do about it.
+        """
+        from . import form, presets
+
+        custom = self.thread_form.currentText() == form.CUSTOM
+        if not custom:
+            defaults = presets.form_defaults(
+                self.thread_form.currentText(), self.pitch.value(),
+                self.mode.currentText())
+            # Block signals: these setValue calls are bookkeeping, not user
+            # edits, and _touch is what calls this method.
+            for widget, value in ((self.angle, defaults["angle"]),
+                                  (self.root_land, defaults["root_land"]),
+                                  (self.crest_land, defaults["crest_land"])):
+                widget.blockSignals(True)
+                widget.setValue(value)
+                widget.blockSignals(False)
+        for widget in (self.angle, self.root_land, self.crest_land):
+            widget.setEnabled(custom)
 
     # ---- preview -------------------------------------------------------
 
     def overrides(self):
         from . import form
 
-        return {
+        values = {
             "Mode": self.mode.currentText(),
             "ThreadForm": self.thread_form.currentText(),
             "Diameter": self.diameter.value(),
@@ -152,9 +234,19 @@ class ThreadTaskPanel(object):
             "Length": self.length.value(),
             "Direction": self.direction.currentText(),
             "Clearance": self.clearance.value(),
+            "Overrun": self.overrun.value(),
             "FlushEnds": self.flush_ends.isChecked(),
             "LeftHanded": self.left_handed.isChecked(),
         }
+        # Only when Custom. On a preset these three are computed by
+        # feature._apply_preset from Form/Pitch/Mode, and sending them would
+        # just fight it -- api.apply_params sets the structural keys first
+        # precisely so a genuine override lands last and survives.
+        if self.thread_form.currentText() == form.CUSTOM:
+            values["Angle"] = self.angle.value()
+            values["RootLand"] = self.root_land.value()
+            values["CrestLand"] = self.crest_land.value()
+        return values
 
     def _errors(self):
         """The checked failure modes, as a tuple for `except`.
@@ -179,8 +271,25 @@ class ThreadTaskPanel(object):
         from . import api
 
         doc = self.doc
-        doc.openTransaction("Thread")
-        self.transaction_open = True
+        # CLEAR THE WRECKAGE OF ANY PREVIOUS ATTEMPT FIRST.
+        #
+        # api.build_cutter appends the cutter to `created` BEFORE validating
+        # it, so a failed build leaves that object in the document while
+        # self.cutter_obj stays None. _rebuild() then routes back here and
+        # would build a SECOND cutter; accept() consumes only that one and
+        # commits the first as an orphan. Measured through the real panel
+        # offscreen: an Invalid ThreadCutter, consumed by nothing, left in
+        # the tree for good beside a working ThreadCutter001 -- reached by
+        # nothing more exotic than "the first preview failed, I corrected
+        # it, I pressed OK".
+        if self.created:
+            api.discard(doc, *reversed(self.created))
+            self.created = []
+        # _build can run more than once for one dialog, and a second
+        # openTransaction closes the first, stranding its undo entry.
+        if not self.transaction_open:
+            doc.openTransaction("Thread")
+            self.transaction_open = True
         try:
             self.cutter_obj = api.build_cutter(
                 doc, self.base, self.sub_name, self.overrides(), self.created)
@@ -193,6 +302,12 @@ class ThreadTaskPanel(object):
 
     def _touch(self):
         """Mark the preview out of date without rebuilding it."""
+        # Before the stale flag: switching Form is what enables or disables
+        # the Custom controls, and switching Pitch or Mode is what reseeds
+        # them. Calling this only from __init__ left them permanently
+        # disabled -- caught by tools/diag_preview.py, which is the only
+        # thing that can see a widget's enabled state.
+        self._sync_form_controls()
         self.stale = True
         self._say(None)
 
@@ -231,6 +346,18 @@ class ThreadTaskPanel(object):
             self.note.setStyleSheet("color: #b9770e;")
             return
         self.note.setStyleSheet("")
+        # The Diameter check, ahead of the form advice: being told the thread
+        # will come out a different SIZE than asked for matters more than
+        # being told ISO droops. Diameter drives no geometry -- the surface
+        # does -- so without this the field was inert.
+        if self.cutter_obj is not None and self.preview_ok:
+            from . import api
+
+            mismatch = api.diameter_note(self.cutter_obj)
+            if mismatch is not None:
+                self.note.setText(mismatch)
+                self.note.setStyleSheet("color: #b9770e;")
+                return
         if self.thread_form.currentText() == form.ISO:
             self.note.setText(
                 "ISO 60 deg gives a 60 deg overhang on every flank. Printed "

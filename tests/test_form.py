@@ -480,5 +480,54 @@ class TestRequiredSurfaceRadius(unittest.TestCase):
                                          0.4, 0.4, 0.12)
 
 
+class TestAchievedDiameter(unittest.TestCase):
+    """The inverse of required_surface_radius -- the check that makes
+    `Diameter` mean something.
+
+    Swept across 60, 90 and 120 degrees, never at 90 alone: at 90 the flank
+    half-angle coincidences make a wrong convention indistinguishable from a
+    right one (see CLAUDE.md's "45 degree coincidence"), so a single-angle
+    round-trip proves nothing about the formula.
+    """
+
+    def test_round_trips_against_required_surface_radius(self):
+        for angle in (60.0, 90.0, 120.0):
+            for mode in (form.INTERNAL, form.EXTERNAL):
+                for pitch in (0.5, 1.25, 3.8):
+                    r = form.required_surface_radius(
+                        mode, 8.0, pitch, angle, 0.1, 0.1, 0.12)
+                    got = form.achieved_diameter(
+                        mode, pitch, angle, 0.1, 0.1, 0.12, r)
+                    self.assertAlmostEqual(
+                        got, 8.0, places=9,
+                        msg="mode=%s angle=%s pitch=%s" % (mode, angle, pitch))
+
+    def test_an_external_thread_is_its_own_shaft(self):
+        self.assertAlmostEqual(
+            form.achieved_diameter(form.EXTERNAL, 1.25, 90.0, 0.2, 0.2,
+                                   0.12, 10.0),
+            20.0, places=9)
+
+    def test_an_internal_thread_is_larger_than_its_bore(self):
+        got = form.achieved_diameter(form.INTERNAL, 1.25, 90.0, 0.2, 0.2,
+                                     0.12, 5.0)
+        self.assertGreater(got, 10.0)
+
+    def test_the_gap_between_bore_and_thread_grows_with_a_shallower_V(self):
+        """Depth is 1/tan(angle/2), so a 60 degree V reaches further than a
+        120 degree one at the same pitch.  Checked across the pair rather
+        than at one angle, for the reason in the class docstring."""
+        sharp = form.achieved_diameter(form.INTERNAL, 1.25, 60.0, 0.1, 0.1,
+                                       0.0, 5.0)
+        blunt = form.achieved_diameter(form.INTERNAL, 1.25, 120.0, 0.1, 0.1,
+                                       0.0, 5.0)
+        self.assertGreater(sharp, blunt)
+
+    def test_an_unknown_mode_raises(self):
+        with self.assertRaises(form.ProfileError) as caught:
+            form.achieved_diameter("Sideways", 1.25, 90.0, 0.2, 0.2, 0.12, 5.0)
+        self.assertIn("Sideways", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

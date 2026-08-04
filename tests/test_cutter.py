@@ -316,5 +316,42 @@ class TestMeasureIsHonest(unittest.TestCase):
         self.assertAlmostEqual(prof["flank_angles"][0], expected, places=2)
 
 
+class TestCrestReliefTakesTheMode(unittest.TestCase):
+    """crest_relief used to infer EXTERNAL from `crest_radius <
+    surface_radius`.
+
+    That holds for every input reachable today, but it means the function
+    cannot tell "external with a negative clearance" from "internal", and
+    would then relieve a shaft OUTWARDS -- removing material from below its
+    own surface. The caller knows the mode; there is no reason to re-derive
+    it from a subtraction.
+    """
+
+    def test_external_relief_spans_from_the_crest_outwards(self):
+        solid = cutter.crest_relief(form.EXTERNAL, 4.0, 3.8, 0.0, 5.0, 1.0)
+        box = solid.optimalBoundingBox()
+        self.assertAlmostEqual(box.XMax, 5.0, places=3)   # surface + overrun
+
+    def test_internal_relief_spans_from_inside_the_bore_to_the_crest(self):
+        solid = cutter.crest_relief(form.INTERNAL, 4.0, 4.2, 0.0, 5.0, 1.0)
+        box = solid.optimalBoundingBox()
+        self.assertAlmostEqual(box.XMax, 4.2, places=3)   # the crest radius
+
+    def test_the_mode_decides_it_not_the_sign_of_the_radii(self):
+        """The two calls differ ONLY in mode; the radii are identical."""
+        external = cutter.crest_relief(form.EXTERNAL, 4.0, 4.2, 0.0, 5.0, 1.0)
+        internal = cutter.crest_relief(form.INTERNAL, 4.0, 4.2, 0.0, 5.0, 1.0)
+        self.assertNotAlmostEqual(external.Volume, internal.Volume, places=3)
+
+    def test_zero_clearance_still_costs_nothing(self):
+        self.assertIsNone(
+            cutter.crest_relief(form.EXTERNAL, 4.0, 4.0, 0.0, 5.0, 1.0))
+
+    def test_an_unknown_mode_is_rejected(self):
+        with self.assertRaises(cutter.CutterError) as caught:
+            cutter.crest_relief("Sideways", 4.0, 3.8, 0.0, 5.0, 1.0)
+        self.assertIn("Sideways", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

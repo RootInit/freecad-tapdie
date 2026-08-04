@@ -13,6 +13,17 @@ class ThreadError(Exception):
     """The thread could not be created."""
 
 
+# How far the thread a cutter really produces may drift from the Diameter
+# asked for before it is worth saying so, in mm. form.achieved_diameter and
+# form.required_surface_radius are exact inverses -- measured to 1e-9 across
+# the whole ISO coarse table, both modes, both forms -- so any drift reported
+# is real. The threshold is not there to absorb error but to stay quiet on
+# the commonest legitimate case: a standard 6.6mm M8 tap drill yields 8.08mm
+# on the printed form, and nagging about that would train the user to ignore
+# the line entirely.
+DIAMETER_TOLERANCE = 0.1
+
+
 def defaults_for(circle):
     """Sensible starting parameters for a resolved selection."""
     mode = circle.mode or form.INTERNAL
@@ -20,6 +31,14 @@ def defaults_for(circle):
         diameter, pitch = presets.nearest_for_bore(circle.radius * 2.0)
     else:
         diameter, pitch = presets.nearest_for_shaft(circle.radius * 2.0)
+    # The cutter's parallel section runs `Overrun` past the surface it is
+    # cutting. For a BORE that direction is inward, towards the axis, so a
+    # fixed 1.0mm reached straight through the middle of anything under
+    # r=1.0 and form.cutter_points rejected it outright -- with no dialog
+    # control able to fix it, since Overrun was not exposed. Half the radius
+    # always clears the axis, and for a shaft the overrun runs outward where
+    # nothing constrains it.
+    overrun = 1.0 if mode == form.EXTERNAL else min(1.0, 0.5 * circle.radius)
     return {
         "Mode": mode,
         "Diameter": diameter,
@@ -27,7 +46,39 @@ def defaults_for(circle):
         "Length": circle.length,
         "Direction": circle.direction,
         "SurfaceRadius": circle.radius,
+        "Overrun": overrun,
     }
+
+
+def diameter_note(cutter_obj):
+    """What this cutter will really produce, when that is not what was asked.
+
+    Returns None when the two agree to within DIAMETER_TOLERANCE.
+
+    `Diameter` positions nothing -- form.cutter_points anchors the profile on
+    the SURFACE and never reads it (measured: byte-identical profiles for 8.0
+    and 24.0). form.py calls Diameter "a check, not a driver", but the check
+    was never performed anywhere, so the field was simply inert: a user
+    threading a 20mm shaft could ask for 16 and get 20 in silence. This is
+    that check.
+    """
+    mode = cutter_obj.Mode
+    got = form.achieved_diameter(
+        mode, cutter_obj.Pitch.Value, cutter_obj.Angle.Value,
+        cutter_obj.RootLand.Value, cutter_obj.CrestLand.Value,
+        cutter_obj.Clearance.Value, cutter_obj.SurfaceRadius.Value)
+    want = cutter_obj.Diameter.Value
+    if abs(got - want) <= DIAMETER_TOLERANCE:
+        return None
+    needed = 2.0 * form.required_surface_radius(
+        mode, want, cutter_obj.Pitch.Value, cutter_obj.Angle.Value,
+        cutter_obj.RootLand.Value, cutter_obj.CrestLand.Value,
+        cutter_obj.Clearance.Value)
+    surface = "shaft" if mode == form.EXTERNAL else "bore"
+    return ("This cuts a %.2fmm thread, not %.2fmm: the selected %s is "
+            "%.2fmm, and a %.2fmm thread needs a %.2fmm one."
+            % (got, want, surface, 2.0 * cutter_obj.SurfaceRadius.Value,
+               want, needed))
 
 
 def local_frame(base, circle):
@@ -79,6 +130,15 @@ def _check_recomputed(obj, what):
     """
     state = set(obj.State)
     if "Invalid" in state or "Touched" in state or "Error" in state:
+        # feature.ThreadCutter records what execute() actually raised, because
+        # FreeCAD swallows it. Prefer that over guessing: this used to tell a
+        # user whose 0.9mm bore was smaller than the 1.0mm Overrun to "check
+        # Diameter, Pitch and the lands", which cannot fix it. A Part::Cut has
+        # no Proxy and still gets the generic advice, which is all there is
+        # for a boolean FreeCAD owns.
+        detail = getattr(getattr(obj, "Proxy", None), "last_error", None)
+        if detail:
+            raise ThreadError("%s did not build: %s" % (what, detail))
         # Same leading phrase as the shape checks below, deliberately: which
         # of the two guards fires is an implementation detail, and callers
         # (and tests) should not have to match on both wordings.

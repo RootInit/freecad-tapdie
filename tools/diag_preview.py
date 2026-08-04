@@ -286,6 +286,103 @@ check("one undo removes the cutter",
 line("   known limitation: undo leaves %s (see api.create_thread docstring)"
      % (left or "nothing"))
 
+# --- a failed first preview must not strand a cutter -----------------------
+# Measured before the fix: api.build_cutter appends the cutter to `created`
+# BEFORE validating it, so a failure left it in the document while
+# self.cutter_obj stayed None. _rebuild() then saw None, called _build()
+# again, and made a SECOND cutter; accept() consumed only that one and
+# committed the first as an orphan (Invalid, consumed by nothing).
+# A 0.6mm shaft fails at the default 0.12 clearance -- the profile's tip
+# lands at r < 0 -- and builds at clearance 0, so the whole cycle is reachable
+# with the dialog's own controls and nothing exotic.
+doc3 = App.newDocument("orphan")
+App.setActiveDocument(doc3.Name)
+base3, sub3 = shaft(doc3, radius=0.3, height=6.0)
+baseline3 = {o.Name for o in doc3.Objects}
+panel3, _c3 = panel_for(doc3, base3, sub3)
+check("a 0.6mm shaft fails the first preview", not panel3.preview_ok,
+      panel3.note.text())
+check("the failed preview explains itself in real terms",
+      "clearance" in panel3.note.text() or "depth" in panel3.note.text(),
+      panel3.note.text())
+panel3.clearance.setValue(0.0)
+guarded("Refresh after the failure", panel3._rebuild)
+check("clearance 0 makes it build", panel3.preview_ok, panel3.note.text())
+check("accept() applies", guarded("accept() after recovery",
+                                  panel3.accept) is True)
+doc3.recompute()
+cutters3 = [o for o in doc3.Objects
+            if getattr(getattr(o, "Proxy", None), "Type", None)
+            == "ThreadCutter"]
+check("exactly one cutter survives a failed-then-fixed preview",
+      len(cutters3) == 1, "cutters: %s" % [o.Name for o in cutters3])
+for c in cutters3:
+    consumed = [o.Name for o in doc3.Objects
+                if getattr(o, "Tool", None) is c]
+    check("the surviving cutter is consumed by the boolean", bool(consumed),
+          "%s consumed_by=%s" % (c.Name, consumed or "NOTHING"))
+line("   added to the document: %s"
+     % sorted({o.Name for o in doc3.Objects} - baseline3))
+
+# --- Custom form is usable ---------------------------------------------------
+# Measured before the fix: picking Custom froze whatever the last preset left,
+# so Custom followed by a finer pitch kept 0.4mm lands against a 0.5mm pitch,
+# the preview died with "leaves no flank within the pitch", and no control in
+# the dialog could fix it.
+doc4 = App.newDocument("customform")
+App.setActiveDocument(doc4.Name)
+base4, sub4 = shaft(doc4, radius=4.0, height=20.0)
+panel4, _c4 = panel_for(doc4, base4, sub4)
+check("a preset leaves the custom controls disabled",
+      not panel4.angle.isEnabled())
+check("a preset still seeds them for display",
+      panel4.angle.value() > 0.0 and panel4.root_land.value() > 0.0,
+      "angle=%.2f root=%.4f" % (panel4.angle.value(),
+                                panel4.root_land.value()))
+panel4.thread_form.setCurrentText(form.CUSTOM)
+check("Custom enables the angle control", panel4.angle.isEnabled())
+check("Custom enables both land controls",
+      panel4.root_land.isEnabled() and panel4.crest_land.isEnabled())
+panel4.pitch.setValue(0.5)
+panel4.root_land.setValue(0.02)
+panel4.crest_land.setValue(0.02)
+panel4.angle.setValue(60.0)
+guarded("Refresh with custom values", panel4._rebuild)
+check("Custom at a fine pitch builds", panel4.preview_ok, panel4.note.text())
+if panel4.preview_ok:
+    check("the custom angle reached the feature",
+          abs(panel4.cutter_obj.Angle.Value - 60.0) < 1e-6,
+          "Angle=%s" % panel4.cutter_obj.Angle.Value)
+    check("the custom lands reached the feature",
+          abs(panel4.cutter_obj.RootLand.Value - 0.02) < 1e-6,
+          "RootLand=%s" % panel4.cutter_obj.RootLand.Value)
+panel4.thread_form.setCurrentText(form.PRINTED)
+guarded("Refresh back on a preset", panel4._rebuild)
+check("a preset takes the angle back off Custom",
+      panel4.preview_ok
+      and abs(panel4.cutter_obj.Angle.Value - 90.0) < 1e-6,
+      "Angle=%s" % (panel4.cutter_obj.Angle.Value
+                    if panel4.cutter_obj else "no cutter"))
+check("the preset controls are disabled again",
+      not panel4.angle.isEnabled())
+guarded("reject() the custom panel", panel4.reject)
+
+# --- the Diameter check actually surfaces ----------------------------------
+# Finding 1: Diameter was passed to cutter_points and never read, so the most
+# prominent field in the dialog changed nothing at all.
+doc5 = App.newDocument("diamcheck")
+App.setActiveDocument(doc5.Name)
+base5, sub5 = shaft(doc5, radius=10.0, height=30.0)
+panel5, _c5 = panel_for(doc5, base5, sub5)
+check("a 20mm shaft defaults to a matching diameter, quietly",
+      "cuts a" not in panel5.note.text(), panel5.note.text())
+panel5.diameter.setValue(16.0)
+guarded("Refresh with a mismatched diameter", panel5._rebuild)
+check("asking for 16 on a 20mm shaft says so",
+      "20.00" in panel5.note.text() and "16.00" in panel5.note.text(),
+      panel5.note.text())
+guarded("reject() the diameter panel", panel5.reject)
+
 line("")
 line("PREVIEW DIAG: %d failure(s)" % len(failures))
 for name in failures:

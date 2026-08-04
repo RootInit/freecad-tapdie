@@ -42,7 +42,32 @@ case "${1:-all}" in
     grep -vE "$NOISE" "$out" || true
     exit "$status"
     ;;
+  diag)
+    # freecadcmd never runs InitGui.py and has no FreeCADGui, so the task
+    # panel -- the only part that owns Qt widgets, an undo transaction and
+    # the enabled/disabled state of a control -- is invisible to `fc`. An
+    # offscreen GUI is the only thing that sees it, and it has caught defects
+    # nothing else could: a stale preview, a stranded cutter, and a set of
+    # controls that never enabled.
+    #
+    # Same output-capture dance as `fc`: /bin/sh has no pipefail, so piping
+    # into grep would hand back grep's status rather than FreeCAD's.
+    out="$ROOT/.diag-test-output"
+    trap 'rm -f "$out"' EXIT INT TERM
+    set +e
+    flatpak run --env=QT_QPA_PLATFORM=offscreen org.freecad.FreeCAD \
+        "$ROOT/tools/diag_preview.py" > "$out" 2>&1
+    status=$?
+    set -e
+    cat "$ROOT/tools/diag_preview.log" 2>/dev/null || true
+    # `[ ... ] && cmd` would be an AND-list whose own failure trips set -e
+    # and exits 1 on the SUCCESS path. Use a plain if.
+    if [ "$status" -ne 0 ]; then
+        grep -vE "$NOISE" "$out" || true
+    fi
+    exit "$status"
+    ;;
   all)
-    "$0" pure && "$0" fc
+    "$0" pure && "$0" fc && "$0" diag
     ;;
 esac
