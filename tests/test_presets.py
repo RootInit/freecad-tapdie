@@ -200,5 +200,57 @@ class TestPrintedLandFloorAndCap(unittest.TestCase):
                 % (pitch, total))
 
 
+class TestLargeDiameters(unittest.TestCase):
+    """Reported: "with a large (100mm diameter) it does not automatically set
+    the diameter that large, it seems to cap out at around 25".
+
+    Two causes, both here: the table stopped at M24, and both lookups took
+    the NEAREST entry, so everything past the end of the table snapped back
+    to the largest size whatever it really measured.
+    """
+
+    def test_the_table_reaches_a_printable_maximum(self):
+        # The bed is 256mm, so a 100mm thread is an ordinary thing to want.
+        self.assertGreaterEqual(presets.ISO_COARSE[-1][0], 100.0)
+
+    def test_the_table_is_ordered_and_has_no_duplicates(self):
+        sizes = [d for d, _p in presets.ISO_COARSE]
+        self.assertEqual(sizes, sorted(sizes))
+        self.assertEqual(len(sizes), len(set(sizes)))
+
+    def test_pitch_never_decreases_with_size(self):
+        pitches = [p for _d, p in presets.ISO_COARSE]
+        for a, b in zip(pitches, pitches[1:]):
+            self.assertGreaterEqual(b, a)
+
+    def test_a_100mm_shaft_is_not_capped(self):
+        diameter, _pitch = presets.nearest_for_shaft(100.0)
+        self.assertAlmostEqual(diameter, 100.0, places=6)
+
+    def test_a_shaft_past_the_table_is_its_own_answer(self):
+        """The shaft IS the major diameter, so there is nothing to snap to."""
+        for size in (137.0, 200.0, 250.0):
+            diameter, pitch = presets.nearest_for_shaft(size)
+            self.assertAlmostEqual(diameter, size, places=6,
+                                   msg="a %.0fmm shaft was capped at %.1f"
+                                       % (size, diameter))
+            self.assertGreater(pitch, 0.0)
+
+    def test_a_bore_past_the_table_is_not_capped_either(self):
+        for size in (95.0, 180.0):
+            diameter, pitch = presets.nearest_for_bore(size)
+            self.assertGreater(
+                diameter, size,
+                "a %.0fmm bore proposed a %.1fmm thread, which would not "
+                "even reach its own wall" % (size, diameter))
+            self.assertGreater(pitch, 0.0)
+
+    def test_small_sizes_are_untouched_by_the_extension(self):
+        """The lookups that already worked must keep their answers."""
+        self.assertEqual(presets.nearest_for_shaft(8.0), (8.0, 1.25))
+        self.assertEqual(presets.nearest_for_shaft(20.0), (20.0, 2.5))
+        self.assertEqual(presets.nearest_for_bore(6.8)[0], 8.0)
+
+
 if __name__ == "__main__":
     unittest.main()

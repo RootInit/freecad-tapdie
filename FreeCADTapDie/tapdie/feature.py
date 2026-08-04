@@ -22,6 +22,10 @@ ICON = "tapdie_cutter.svg"
 END_PROBE_FRACTIONS = (0.05, 0.01)
 MIN_END_PROBE = 1e-3
 
+# How far the fill tube stops short of the cutter's own ends, in mm, so no
+# face of one is coplanar with a face of the other. See ThreadFiller.
+FILL_INSET = 0.25
+
 
 def feature_span(obj):
     """(z_lo, z_hi) of the threaded run in the anchor's own coordinates."""
@@ -60,7 +64,7 @@ def fill_needed(obj):
     return form.fill_thickness(
         obj.Mode, obj.Diameter.Value, obj.Pitch.Value, obj.Angle.Value,
         obj.RootLand.Value, obj.CrestLand.Value, obj.Clearance.Value,
-        obj.SurfaceRadius.Value, obj.FlatClearance.Value)
+        obj.SurfaceRadius.Value)
 
 
 def _end_is_free(base_shape, anchor, surface_radius, pitch, z_edge, sign):
@@ -190,18 +194,12 @@ class ThreadCutter(object):
             obj.CrestLand = 0.08
         if not hasattr(obj, "Clearance"):
             p("App::PropertyLength", "Clearance", "Fit",
-              "Flank clearance, per part: a mated pair ends up 2x this "
-              "apart measured normal to the flanks")
+              "Fit, per part. A mated pair ends up 2x this apart measured "
+              "normal to the FLANKS, and wider than that at the flats by "
+              "1/sin(angle/2) -- 2.83x at 90 degrees. The two cannot be set "
+              "separately: both profiles are the same V displaced radially, "
+              "and one displacement fixes both gaps at once")
             obj.Clearance = 0.12
-        if not hasattr(obj, "FlatClearance"):
-            p("App::PropertyLength", "FlatClearance", "Fit",
-              "Radial clearance at the flats, per part: a mated pair ends "
-              "up 2x this apart between each crest and the root facing it. "
-              "Separate from Clearance because flank fit and root fit are "
-              "different allowances -- and a printed thread usually wants "
-              "more here, the crest being the least accurate feature an FDM "
-              "machine makes")
-            obj.FlatClearance = 0.12
         if not hasattr(obj, "Length"):
             p("App::PropertyLength", "Length", "Extent", "Threaded length")
             obj.Length = 15.2
@@ -345,7 +343,7 @@ class ThreadCutter(object):
         anchor = form.effective_surface_radius(
             obj.Mode, obj.Diameter.Value, obj.Pitch.Value, obj.Angle.Value,
             obj.RootLand.Value, obj.CrestLand.Value, obj.Clearance.Value,
-            surface, obj.FlatClearance.Value,
+            surface,
             # Anchored unclamped only when material really will be added --
             # the same test add_material() uses, so the cutter and the fuse
             # can never disagree about where the surface ends up.
@@ -605,7 +603,20 @@ class ThreadFiller(object):
         else:
             inner, outer = surface - thickness, surface + overlap
         z_lo, z_hi, _height = keep_range(source)
-        obj.Shape = cutter.fill_tube(inner, outer, z_lo, z_hi)
+        # PULL THE ENDS IN. Spanning exactly the cutter's own range put the
+        # tube's end faces COPLANAR with the cutter's, and the Part::Cut then
+        # failed outright: measured, every internal thread at 100mm with a
+        # liner refused to build at 4.0, 2.0, 1.5, 1.25 and 1.0 pitch, while
+        # the identical geometry with AddMaterial off built at all of them.
+        #
+        # Inset rather than overshoot, deliberately. Running the tube PAST
+        # the thread would leave a collar of unthreaded liner at the bore's
+        # minor radius, and the mating part's crest jams on exactly that --
+        # the defect the internal groove's own end overrun exists to avoid.
+        # Pulled in, the ends sit inside the cut and cost a sliver of
+        # engagement instead.
+        inset = min(FILL_INSET, 0.2 * (z_hi - z_lo))
+        obj.Shape = cutter.fill_tube(inner, outer, z_lo + inset, z_hi - inset)
         # After the Shape assignment, which resets Placement. The same frame
         # as the cutter, so the tube lands exactly over the threaded run; the
         # cutter's phase rotation is about the axis and a tube does not care.

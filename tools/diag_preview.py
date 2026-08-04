@@ -437,8 +437,8 @@ panel6.advanced.setChecked(True)
 hidden = [w for _l, w in panel6.advanced_rows if w.isHidden()]
 check("Advanced reveals every advanced row", not hidden,
       "%d still hidden" % len(hidden))
-check("the flat clearance is one of them",
-      not panel6.flat_clearance.isHidden())
+check("the start angle is one of them",
+      not panel6.start_angle.isHidden())
 panel6.advanced.setChecked(False)
 check("and Simple hides them again",
       all(w.isHidden() for _l, w in panel6.advanced_rows))
@@ -456,15 +456,12 @@ check("Custom's own controls are shown and enabled",
 
 # The two clearances are independent.
 panel6.thread_form.setCurrentText(form.PRINTED)
-panel6.flat_clearance.setValue(0.30)
-guarded("Refresh with a wider flat clearance", panel6._rebuild)
-check("a wider flat clearance still builds", panel6.preview_ok,
+panel6.clearance.setValue(0.30)
+guarded("Refresh with a wider clearance", panel6._rebuild)
+check("a wider clearance still builds", panel6.preview_ok,
       panel6.note.text())
-check("flat clearance reached the feature",
-      abs(panel6.cutter_obj.FlatClearance.Value - 0.30) < 1e-9,
-      "FlatClearance=%s" % panel6.cutter_obj.FlatClearance.Value)
-check("and did not disturb the flank clearance",
-      abs(panel6.cutter_obj.Clearance.Value - 0.12) < 1e-9,
+check("the clearance reached the feature",
+      abs(panel6.cutter_obj.Clearance.Value - 0.30) < 1e-9,
       "Clearance=%s" % panel6.cutter_obj.Clearance.Value)
 guarded("reject() the simple/advanced panel", panel6.reject)
 

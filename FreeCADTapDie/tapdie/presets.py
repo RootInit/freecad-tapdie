@@ -11,7 +11,11 @@ from . import form
 ISO_COARSE = (
     (3.0, 0.50), (4.0, 0.70), (5.0, 0.80), (6.0, 1.00), (7.0, 1.00),
     (8.0, 1.25), (10.0, 1.50), (12.0, 1.75), (14.0, 2.00), (16.0, 2.00),
-    (18.0, 2.50), (20.0, 2.50), (22.0, 2.50), (24.0, 3.00),
+    (18.0, 2.50), (20.0, 2.50), (22.0, 2.50), (24.0, 3.00), (27.0, 3.00),
+    (30.0, 3.50), (33.0, 3.50), (36.0, 4.00), (39.0, 4.00), (42.0, 4.50),
+    (45.0, 4.50), (48.0, 5.00), (52.0, 5.00), (56.0, 5.50), (60.0, 5.50),
+    (64.0, 6.00), (68.0, 6.00), (72.0, 6.00), (80.0, 6.00), (90.0, 6.00),
+    (100.0, 6.00),
 )
 
 
@@ -34,6 +38,16 @@ def nearest_for_bore(bore_diameter):
             form.ISO, pitch, 60.0, form.INTERNAL)
         return abs(bore_diameter - minor)
 
+    largest, coarsest = ISO_COARSE[-1]
+    largest_minor = largest - 2.0 * form.depth(form.ISO, coarsest, 60.0,
+                                               form.INTERNAL)
+    if bore_diameter > largest_minor:
+        # OFF THE TABLE. Snapping to the nearest entry would cap a 200mm bore
+        # at the largest standard size -- reported as "a 100mm selection caps
+        # out at around 25", which was this and the table ending at M24.
+        # Beyond the table the bore itself is the best guess there is.
+        return (bore_diameter + 2.0 * form.depth(form.ISO, coarsest, 60.0,
+                                                 form.INTERNAL), coarsest)
     return min(ISO_COARSE, key=error)
 
 
@@ -43,6 +57,12 @@ def nearest_for_shaft(shaft_diameter):
     A die cuts into an existing OD, so the shaft IS the major diameter and a
     plain nearest-nominal match is correct here.
     """
+    largest, coarsest = ISO_COARSE[-1]
+    if shaft_diameter > largest:
+        # Off the table: the shaft IS the major diameter, so it is its own
+        # answer. Snapping to the largest entry instead capped every big
+        # selection at that size, whatever it really measured.
+        return shaft_diameter, coarsest
     return min(ISO_COARSE, key=lambda e: abs(e[0] - shaft_diameter))
 
 

@@ -154,22 +154,13 @@ class ThreadTaskPanel(object):
         self.clearance.setSingleStep(0.01)
         self.clearance.setValue(0.12)
         self.clearance.setToolTip(
-            "Flank clearance, per part: a mated pair ends up twice this "
-            "apart measured normal to the flanks.")
+            "Fit, per part. A mated pair ends up twice this apart measured "
+            "normal to the FLANKS, and wider still at the flats -- by "
+            "1/sin(angle/2), so 2.83x the clearance at 90 degrees.\n"
+            "One setting because it can only be one: both profiles are the "
+            "same V displaced radially, and one displacement fixes both "
+            "gaps together.")
         row("Clearance", self.clearance)
-
-        self.flat_clearance = QtGui.QDoubleSpinBox()
-        self.flat_clearance.setRange(0.0, 5.0)
-        self.flat_clearance.setDecimals(3)
-        self.flat_clearance.setSingleStep(0.01)
-        self.flat_clearance.setValue(0.12)
-        self.flat_clearance.setToolTip(
-            "Radial clearance at the flats, per part: a mated pair ends up "
-            "twice this apart between each crest and the root facing it.\n"
-            "Separate from flank clearance on purpose -- a printed thread "
-            "usually wants more here, the crest being the least accurate "
-            "feature an FDM machine makes. At zero the flats touch.")
-        row("Flat clearance", self.flat_clearance, advanced=True)
 
         # Exposed because it can make a selection unbuildable and there was
         # no way to correct it: for a bore the overrun runs INWARD, so the
@@ -262,8 +253,7 @@ class ThreadTaskPanel(object):
             widget.currentTextChanged.connect(self._touch)
         for widget in (self.diameter, self.pitch, self.length, self.clearance,
                        self.overrun, self.angle, self.root_land,
-                       self.crest_land, self.start_angle,
-                       self.flat_clearance):
+                       self.crest_land, self.start_angle):
             widget.valueChanged.connect(self._touch)
         for widget in (self.left_handed, self.flush_ends, self.add_material):
             widget.toggled.connect(self._touch)
@@ -327,7 +317,6 @@ class ThreadTaskPanel(object):
             "Length": self.length.value(),
             "Direction": self.direction.currentText(),
             "Clearance": self.clearance.value(),
-            "FlatClearance": self.flat_clearance.value(),
             "AddMaterial": self.add_material.isChecked(),
             "Overrun": self.overrun.value(),
             "StartAngle": self.start_angle.value(),

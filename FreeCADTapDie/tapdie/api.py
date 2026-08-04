@@ -68,7 +68,6 @@ def diameter_note(cutter_obj):
     # only the direction no cutting tool can do -- a thread larger than the
     # shaft, or smaller than the bore -- so anything reported here is a
     # request that was genuinely clamped, not a rounding difference.
-    flat = cutter_obj.FlatClearance.Value
     # The SAME predicate feature.execute and add_material use. Reading the
     # AddMaterial flag directly instead let this report "cuts 20.00, not
     # 24.00" for a cutter that was about to be clamped, and stay silent for
@@ -79,18 +78,18 @@ def diameter_note(cutter_obj):
         mode, cutter_obj.Diameter.Value, cutter_obj.Pitch.Value,
         cutter_obj.Angle.Value, cutter_obj.RootLand.Value,
         cutter_obj.CrestLand.Value, cutter_obj.Clearance.Value,
-        cutter_obj.SurfaceRadius.Value, flat, allow_fill=fill)
+        cutter_obj.SurfaceRadius.Value, allow_fill=fill)
     got = form.achieved_diameter(
         mode, cutter_obj.Pitch.Value, cutter_obj.Angle.Value,
         cutter_obj.RootLand.Value, cutter_obj.CrestLand.Value,
-        cutter_obj.Clearance.Value, anchor, flat)
+        cutter_obj.Clearance.Value, anchor)
     want = cutter_obj.Diameter.Value
     if abs(got - want) <= DIAMETER_TOLERANCE:
         return None
     needed = 2.0 * form.required_surface_radius(
         mode, want, cutter_obj.Pitch.Value, cutter_obj.Angle.Value,
         cutter_obj.RootLand.Value, cutter_obj.CrestLand.Value,
-        cutter_obj.Clearance.Value, flat)
+        cutter_obj.Clearance.Value)
     surface = "shaft" if mode == form.EXTERNAL else "bore"
     direction = "smaller" if mode == form.EXTERNAL else "larger"
     return ("This cuts a %.2fmm thread, not %.2fmm: a %.2fmm thread needs a "

@@ -90,8 +90,7 @@ def female_bore_radius(params):
     angle, root_land, crest_land = _profile(params, form.INTERNAL)
     return form.required_surface_radius(
         form.INTERNAL, params["Diameter"], params["Pitch"], angle,
-        root_land, crest_land, params["Clearance"],
-        params.get("FlatClearance"))
+        root_land, crest_land, params["Clearance"])
 
 
 def build(doc, params, created=None, origin=None):

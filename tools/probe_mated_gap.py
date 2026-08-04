@@ -11,11 +11,14 @@ cut_depth + 2 * radial_offset and the two cancelled.
     nut bore +0.12   flats gap  0.1200    minimum gap anywhere  0.0849
     nut bore +0.24   flats gap  0.2400    minimum gap anywhere  0.1697
 
-Fixed by sizing the internal BLANK larger by flat_clearance(), which lifts the
-nut's crest and root together and leaves both profiles untouched.
+Fixed by sizing the internal blank on the FORM ALONE. The bore used to
+subtract 2 * radial_offset, which cancelled the offset each profile is shifted
+by and left the pair touching everywhere -- flanks included. There was briefly
+a second setting for the flats; it could not work, because both profiles are
+the same V displaced radially and one displacement fixes both gaps at once.
 
 This probe exists because two shapelier-looking fixes were reasoned out,
-implemented, and both turned out wrong -- see form.flat_clearance for what
+implemented, and both turned out wrong -- see form.flat_gap for what
 they were and how they failed. Deriving this by hand does not work; draw the
 two boundaries and measure the distance.
 
@@ -98,15 +101,23 @@ for pitch in (0.5, 0.7, 1.25, 2.5, 3.8):
     # degrees of rotation, or the pair simply collides.
     nut = [(z + pitch / 2.0, r) for z, r in nut]
 
-    flat = (nut_crest + depth) - bolt_crest
-    flank = 2.0 * CLEARANCE
+    # DERIVE the flank gap from the geometry; do not assume it. This line
+    # used to read `flank = 2.0 * CLEARANCE`, printing the promise instead of
+    # the measurement -- which is exactly how a clearance setting that did
+    # nothing at all sat here looking correct.
+    displacement = (nut_crest + depth) - bolt_crest
+    flat = displacement
+    flank = displacement * math.sin(math.radians(ANGLE / 2.0))
     anywhere = min_gap(bolt, nut)
-    ok = flat > 1e-6 and anywhere > 1e-6
+    ok = (flat > 1e-6 and anywhere > 1e-6
+          and abs(flank - 2.0 * CLEARANCE) < 1e-9)
     print("%-8.2f %-9.4f %-9.4f %-9.4f %-9.4f %s"
           % (pitch, land, flank, flat, anywhere,
-             "ok" if ok else "TOUCHING"))
+             "ok" if ok else "WRONG"))
     if not ok:
         worst.append(pitch)
 
-print("\nPROBE: %s" % ("ok" if not worst else "TOUCHING at %s" % worst))
+print("\n(flank must come out at 2 x clearance = %.4f)"
+      % (2.0 * CLEARANCE))
+print("PROBE: %s" % ("ok" if not worst else "WRONG at %s" % worst))
 raise SystemExit(0 if not worst else 1)

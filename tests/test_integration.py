@@ -438,12 +438,6 @@ class TestLeadInChamfer(unittest.TestCase):
 
         obj = self._iso_cutter(mode=form.INTERNAL, lead_in=False)
         obj.Clearance = 0.0
-        # FlatClearance too: it is the OTHER thing that moves the anchor off
-        # the selected surface, by opening the bore out to leave a gap
-        # between the mated flats. Zeroing only the flank clearance left the
-        # profile anchored 0.24mm away from SurfaceRadius and the comparison
-        # measured a crest relief that was never part of the sweep.
-        obj.FlatClearance = 0.0
         # FlushEnds off too: it trims the sweep back to the run's extent, so
         # comparing a flush cutter against the untrimmed sweep measured 159.7
         # against 209.6. Both properties are deliberately neutralised here so
@@ -1333,7 +1327,14 @@ class TestAddMaterialWhenNeeded(unittest.TestCase):
         self.assertEqual([o for o in created if o.TypeId == "Part::Fuse"], [])
         self.assertIsNotNone(api.diameter_note(cutter_obj))
 
-    def test_the_fill_tube_spans_exactly_the_threaded_run(self):
+    def test_the_fill_tube_stops_just_short_of_the_cutter(self):
+        """It must cover the run, but NOT end flush with the cutter.
+
+        This asserted an exact match until a 100mm internal thread showed
+        why it cannot: coplanar end faces made Part::Cut refuse outright at
+        five different pitches. The tube is inset by feature.FILL_INSET at
+        each end, so it covers all but a sliver and shares no plane.
+        """
         shaft, sub = self._shaft(radius=4.0)
         created = []
         cutter_obj, _cut = api.build_thread(
@@ -1344,9 +1345,120 @@ class TestAddMaterialWhenNeeded(unittest.TestCase):
                   == "ThreadFiller"][0]
         fill_box = filler.Shape.optimalBoundingBox()
         cut_box = cutter_obj.Shape.optimalBoundingBox()
-        self.assertAlmostEqual(fill_box.ZLength, cut_box.ZLength, delta=1e-3,
-                               msg="the tube and the cutter must cover the "
-                                   "same run, or the thread runs off it")
+        inset = 2.0 * feature.FILL_INSET
+        self.assertAlmostEqual(fill_box.ZLength, cut_box.ZLength - inset,
+                               delta=1e-3,
+                               msg="the tube must cover the run bar the "
+                                   "inset that keeps its faces off the "
+                                   "cutter's")
+        self.assertGreater(fill_box.ZLength, 0.8 * cut_box.ZLength,
+                           "the inset must stay a sliver, not a gap")
+
+
+class TestLargeDiameterThreads(unittest.TestCase):
+    """100mm threads, reported as erroring.
+
+    Two separate causes, both fixed and both pinned here:
+
+      * the ISO table stopped at M24 and both lookups snapped to the NEAREST
+        entry, so a 100mm selection defaulted to a 24mm thread;
+      * an internal thread at 100mm always needs a liner (the printed form
+        wants a smaller bore than any 100mm hole), and the liner spanned
+        EXACTLY the cutter's own axial range -- coplanar end faces, which
+        Part::Cut refused outright at 4.0, 2.0, 1.5, 1.25 and 1.0 pitch
+        while the identical geometry without a liner built at all of them.
+    """
+
+    def setUp(self):
+        self.doc = App.newDocument("bigtest", hidden=True)
+
+    def tearDown(self):
+        App.closeDocument(self.doc.Name)
+
+    def _shaft(self, radius, height=40.0):
+        obj = self.doc.addObject("Part::Cylinder", "Shaft")
+        obj.Radius, obj.Height = radius, height
+        self.doc.recompute()
+        return obj, self._face(obj, radius)
+
+    def _bore(self, radius, wall=25.0, height=40.0):
+        obj = self.doc.addObject("Part::Feature", "Block")
+        obj.Shape = Part.makeCylinder(radius + wall, height).cut(
+            Part.makeCylinder(radius, height))
+        self.doc.recompute()
+        return obj, self._face(obj, radius)
+
+    def _face(self, obj, radius):
+        for i, f in enumerate(obj.Shape.Faces):
+            if (hasattr(f.Surface, "Radius")
+                    and abs(f.Surface.Radius - radius) < 1e-6):
+                return "Face%d" % (i + 1)
+        raise AssertionError("no face at r=%.3f" % radius)
+
+    def test_a_100mm_shaft_defaults_to_a_100mm_thread(self):
+        _shaft, sub = self._shaft(50.0)
+        circle = selection.resolve(_shaft, sub)
+        defaults = api.defaults_for(circle)
+        self.assertAlmostEqual(defaults["Diameter"], 100.0, places=3,
+                               msg="defaulted to M%.1f" % defaults["Diameter"])
+
+    def test_a_100mm_external_thread_builds_at_every_pitch(self):
+        for pitch in (6.0, 3.0, 2.0, 1.25):
+            shaft, sub = self._shaft(50.0)
+            _cutter, cut = api.create_thread(
+                self.doc, shaft, sub,
+                {"Diameter": 100.0, "Pitch": pitch, "Length": 20.0})
+            self.assertTrue(cut.Shape.isValid(), "pitch %.2f" % pitch)
+            self.assertEqual(len(cut.Shape.Solids), 1, "pitch %.2f" % pitch)
+
+    def test_a_100mm_internal_thread_builds_at_every_pitch(self):
+        """THE regression: these are the exact pitches that failed."""
+        for pitch in (6.0, 4.0, 3.0, 2.0, 1.5, 1.25, 1.0):
+            block, sub = self._bore(50.0)
+            _cutter, cut = api.create_thread(
+                self.doc, block, sub,
+                {"Diameter": 100.0, "Pitch": pitch, "Length": 20.0})
+            self.assertTrue(cut.Shape.isValid(), "pitch %.2f" % pitch)
+            self.assertEqual(len(cut.Shape.Solids), 1, "pitch %.2f" % pitch)
+
+    def test_a_100mm_internal_thread_really_does_need_a_liner(self):
+        """Fixture check: if this stops being the filled case, the test
+        above stops covering the bug it was written for."""
+        block, sub = self._bore(50.0)
+        cutter_obj, _cut = api.create_thread(
+            self.doc, block, sub,
+            {"Diameter": 100.0, "Pitch": 2.0, "Length": 20.0})
+        self.assertGreater(feature.fill_needed(cutter_obj), 0.0)
+
+    def test_the_liner_stops_short_of_the_cutter_at_both_ends(self):
+        """Coplanar faces are what Part::Cut choked on, so the inset is the
+        fix and must stay measurable."""
+        block, sub = self._bore(50.0)
+        created = []
+        cutter_obj, _cut = api.build_thread(
+            self.doc, block, sub,
+            {"Diameter": 100.0, "Pitch": 2.0, "Length": 20.0}, created)
+        filler = [o for o in created
+                  if getattr(getattr(o, "Proxy", None), "Type", None)
+                  == "ThreadFiller"][0]
+        liner = filler.Shape.optimalBoundingBox()
+        tool = cutter_obj.Shape.optimalBoundingBox()
+        self.assertGreater(liner.ZMin, tool.ZMin + 1e-6,
+                           "the liner's low end is flush with the cutter's")
+        self.assertLess(liner.ZMax, tool.ZMax - 1e-6,
+                        "the liner's high end is flush with the cutter's")
+
+    def test_a_thread_far_larger_than_its_shaft_still_builds(self):
+        """40mm of sleeve: the fill is not a rounding correction here."""
+        shaft, sub = self._shaft(10.0, height=30.0)
+        cutter_obj, cut = api.create_thread(
+            self.doc, shaft, sub,
+            {"Diameter": 100.0, "Pitch": 6.0, "Length": 20.0})
+        self.assertGreater(feature.fill_needed(cutter_obj), 30.0)
+        self.assertTrue(cut.Shape.isValid())
+        self.assertEqual(len(cut.Shape.Solids), 1)
+        box = cut.Shape.optimalBoundingBox()
+        self.assertGreater(max(box.XLength, box.YLength), 90.0)
 
 
 class TestSelectingAFlatCircularFace(unittest.TestCase):
@@ -1435,7 +1547,7 @@ class TestPrintTestPiece(unittest.TestCase):
             "Mode": form.EXTERNAL, "ThreadForm": form.PRINTED,
             "Diameter": 8.0, "Pitch": 1.25, "Length": 10.0,
             "Direction": form.BOTH, "Clearance": 0.12,
-            "FlatClearance": 0.12, "Overrun": 1.0, "StartAngle": 0.0,
+            "Overrun": 1.0, "StartAngle": 0.0,
             "FlushEnds": True, "LeftHanded": False,
         }
         params.update(over)
@@ -1489,7 +1601,7 @@ class TestPrintTestPiece(unittest.TestCase):
         from tapdie import testpiece
 
         created = []
-        params = self._params(Pitch=2.0, Clearance=0.2, FlatClearance=0.3,
+        params = self._params(Pitch=2.0, Clearance=0.2,
                               LeftHanded=True, StartAngle=30.0)
         testpiece.build(self.doc, params, created)
         cutters = [o for o in created
@@ -1498,8 +1610,6 @@ class TestPrintTestPiece(unittest.TestCase):
         for cutter_obj in cutters:
             self.assertAlmostEqual(cutter_obj.Pitch.Value, 2.0, places=9)
             self.assertAlmostEqual(cutter_obj.Clearance.Value, 0.2, places=9)
-            self.assertAlmostEqual(cutter_obj.FlatClearance.Value, 0.3,
-                                   places=9)
             self.assertTrue(cutter_obj.LeftHanded)
             self.assertAlmostEqual(cutter_obj.StartAngle.Value, 30.0,
                                    places=9)

@@ -64,14 +64,15 @@ clearance, not the blank.
 - **Direction** matters when you select an *edge*. An edge sits at one end of
   the feature, so "Both ways" would put half the run in open air. It is probed
   for automatically; a cylindrical face always straddles its own midpoint.
-- **Clearance is taken radially, in every direction.** The cutter relieves the
-  blank to the crest radius over the threaded run and anchors the profile on
-  that relieved surface — which is what a real die does. A bolt and a nut cut
-  with the same settings end up `2 × clearance` apart **on the flanks and at
-  the flats alike**; the crest and root lands come out at exactly the widths
-  asked for at any pitch. (The flats used to have *zero* gap — the flank
-  offset and the bore size cancelled exactly. `tools/probe_mated_gap.py`
-  measures it.)
+- **One clearance, because it can only be one.** Both profiles are the same V
+  displaced radially, and a radial displacement has a single degree of
+  freedom: it fixes the flank gap and the flat gap together. A bolt and nut
+  cut with the same settings end up `2 × Clearance` apart normal to the
+  **flanks**, and wider at the **flats** by `1/sin(angle/2)` — 2.83× the
+  clearance at 90°, which is the right way round, since a crest is the least
+  accurate feature an FDM machine makes. There were briefly two settings and
+  the flank one did nothing at all; `tools/probe_mated_gap.py` measures the
+  real numbers rather than restating the promise.
 - **The printed 90° form is near-triangular.** Its lands are 0.021 × pitch —
   0.026 mm at M8×1.25 — just enough to avoid a mathematically sharp tip, which
   is the tangency case where consecutive turns of the sweep touch. Everything

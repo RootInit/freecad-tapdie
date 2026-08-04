@@ -351,7 +351,7 @@ class TestClearance(unittest.TestCase):
     def test_the_profile_keeps_its_six_corners_at_every_clearance(self):
         """Flat clearance is taken by sizing the BLANK, not by reshaping the
         cutter -- so no corner is ever added and no axis-perpendicular face
-        can appear. See form.flat_clearance for the two reshaping attempts
+        can appear. See form.flat_gap for the two reshaping attempts
         that were measured and rejected.
         """
         for c in (0.0, 0.12, 0.5):
@@ -475,13 +475,11 @@ class TestRequiredSurfaceRadius(unittest.TestCase):
                                          0.4, 0.4, 0.12)
         self.assertAlmostEqual(r, 4.0, places=9)
 
-    def test_internal_leaves_room_for_depth_reliefs_and_the_flats(self):
+    def test_internal_leaves_room_for_the_depth(self):
         r = form.required_surface_radius(form.INTERNAL, 8.0, 1.25, 90.0,
                                          0.4, 0.4, 0.12)
         self.assertAlmostEqual(
-            r, 4.0 - form.cut_depth(1.25, 90.0, 0.4, 0.4)
-            - 2.0 * form.radial_offset(0.12, 90.0)
-            + form.flat_clearance(0.12), places=9)
+            r, 4.0 - form.cut_depth(1.25, 90.0, 0.4, 0.4), places=9)
 
     def test_a_mated_pair_clears_crest_to_root(self):
         """The nut's root must clear the bolt's crest, not land on it.
@@ -501,7 +499,7 @@ class TestRequiredSurfaceRadius(unittest.TestCase):
         nut_root = (form.crest_radius(form.INTERNAL, bore, c, angle)
                     + form.cut_depth(p, angle, root_l, crest_l))
         self.assertAlmostEqual(nut_root - bolt_crest,
-                               form.flat_clearance(c), places=9)
+                               form.flat_gap(c, angle), places=9)
         self.assertGreater(offset, 0.0)
 
     def test_a_printed_90_bore_is_larger_than_the_iso_tap_drill(self):
@@ -511,8 +509,8 @@ class TestRequiredSurfaceRadius(unittest.TestCase):
         # is a usable starting guess rather than a wild one.
         r = form.required_surface_radius(form.INTERNAL, 8.0, 1.25, 90.0,
                                          0.4, 0.4, 0.12)
-        self.assertAlmostEqual(2 * r, 6.8712 + 2 * form.flat_clearance(0.12),
-                               places=4)
+        self.assertAlmostEqual(2 * r, 8.0 - 2 * form.cut_depth(
+            1.25, 90.0, 0.4, 0.4), places=4)
         self.assertGreater(2 * r, 6.75)
 
     def test_invalid_mode_is_rejected(self):
@@ -571,19 +569,14 @@ class TestAchievedDiameter(unittest.TestCase):
 
 
 class TestMatedPairClearance(unittest.TestCase):
-    """A bolt and a nut cut with the same settings must clear each other in
-    EVERY direction, not only normal to the flanks.
+    """One clearance, and BOTH gaps must move with it.
 
-    The defect this pins: clearance was a pure radial shift of both profiles,
-    which opens 2 * clearance normal to the flanks and exactly NOTHING
-    between a crest and the root facing it -- because
-    required_surface_radius subtracts precisely cut_depth + 2 *
-    radial_offset, and the two cancel. Measured on M8x1.25 at clearance 0.12
-    before the root relief existed:
-
-        flank gap, normal                  0.2400
-        bolt crest to nut root, radial     0.0000
-        bolt root to nut crest, radial     0.0000
+    The defect this exists to prevent: there were two settings, and the
+    flank one did NOTHING. Its inward shift on the bolt and outward shift on
+    the nut were cancelled exactly by a -2 * radial_offset term in the bore
+    sizing, so 0.00, 0.12 and 0.30 all produced a byte-identical 0.1697mm
+    minimum gap. Nothing tested a mated pair across a SWEEP of clearances --
+    every test used one value -- so a setting that did nothing looked fine.
     """
 
     def _pair(self, major, pitch, angle, land, clearance):
@@ -599,38 +592,56 @@ class TestMatedPairClearance(unittest.TestCase):
         nut_root = nut_crest + depth
         return bolt_root, bolt_crest, nut_crest, nut_root
 
-    def test_the_flats_clear_by_the_same_amount_as_the_flanks(self):
+    def test_the_flanks_clear_by_twice_the_clearance(self):
+        """Clearance keeps its own meaning: the gap normal to the flanks."""
         for angle in (60.0, 90.0, 120.0):
             for pitch in (0.5, 1.25, 3.8):
                 for clearance in (0.05, 0.12, 0.3):
                     land = 0.021 * pitch
-                    b_root, b_crest, n_crest, n_root = self._pair(
+                    _br, b_crest, _nc, n_root = self._pair(
                         8.0, pitch, angle, land, clearance)
-                    where = ("angle %.0f pitch %.2f clearance %.2f"
-                             % (angle, pitch, clearance))
-                    flank = form.flat_clearance(clearance)
+                    displacement = n_root - b_crest
+                    flank = displacement * math.sin(math.radians(angle / 2.0))
                     self.assertAlmostEqual(
-                        n_root - b_crest, flank, places=9,
-                        msg="bolt crest to nut root, %s" % where)
-                    self.assertAlmostEqual(
-                        n_crest - b_root, flank, places=9,
-                        msg="bolt root to nut crest, %s" % where)
+                        flank, 2.0 * clearance, places=9,
+                        msg="angle %.0f pitch %.2f clearance %.2f"
+                            % (angle, pitch, clearance))
+
+    def test_the_flats_clear_by_the_displacement_itself(self):
+        for angle in (60.0, 90.0, 120.0):
+            for clearance in (0.05, 0.12, 0.3):
+                b_root, b_crest, n_crest, n_root = self._pair(
+                    8.0, 1.25, angle, 0.026, clearance)
+                expected = form.flat_gap(clearance, angle)
+                where = "angle %.0f clearance %.2f" % (angle, clearance)
+                self.assertAlmostEqual(n_root - b_crest, expected, places=9,
+                                       msg="crest to root, %s" % where)
+                self.assertAlmostEqual(n_crest - b_root, expected, places=9,
+                                       msg="root to crest, %s" % where)
+
+    def test_the_flats_always_clear_by_more_than_the_flanks(self):
+        """1/sin(angle/2) > 1 at every angle, which is the right way round:
+        a crest is the least accurate feature an FDM machine makes."""
+        for angle in (60.0, 90.0, 120.0):
+            self.assertGreater(form.flat_gap(0.12, angle), 2.0 * 0.12,
+                               "angle %.0f" % angle)
+
+    def test_changing_the_clearance_actually_changes_the_gap(self):
+        """THE regression. A setting that does nothing must never ship
+        again, so this compares distinct values rather than checking one."""
+        gaps = [self._pair(8.0, 1.25, 90.0, 0.026, c)[3]
+                - self._pair(8.0, 1.25, 90.0, 0.026, c)[1]
+                for c in (0.0, 0.06, 0.12, 0.30)]
+        self.assertEqual(len(set(round(g, 9) for g in gaps)), len(gaps),
+                         "different clearances gave the same gap: %s" % gaps)
+        for a, b in zip(gaps, gaps[1:]):
+            self.assertGreater(b, a, "the gap must grow with the clearance")
 
     def test_zero_clearance_still_means_a_perfect_interference_fit(self):
-        """The reference case must stay exactly touching, not gain a gap."""
-        b_root, b_crest, n_crest, n_root = self._pair(8.0, 1.25, 90.0, 0.0263,
-                                                      0.0)
+        b_root, b_crest, n_crest, n_root = self._pair(8.0, 1.25, 90.0,
+                                                      0.0263, 0.0)
         self.assertAlmostEqual(n_root - b_crest, 0.0, places=9)
         self.assertAlmostEqual(n_crest - b_root, 0.0, places=9)
-
-    def test_the_flanks_are_unchanged_by_the_relief(self):
-        """The relief must not buy its radial gap out of engagement: the
-        flank gap is still exactly 2 * clearance, normal to the flank."""
-        for angle in (60.0, 90.0, 120.0):
-            gap = (2.0 * form.radial_offset(0.12, angle)
-                   * math.sin(math.radians(angle / 2.0)))
-            self.assertAlmostEqual(gap, 0.24, places=9,
-                                   msg="angle %.0f" % angle)
 
 
 class TestEffectiveSurfaceRadius(unittest.TestCase):
