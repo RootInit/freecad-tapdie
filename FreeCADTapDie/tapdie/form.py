@@ -112,6 +112,23 @@ def _check_mode(mode):
             "mode %r is not %s or %s" % (mode, INTERNAL, EXTERNAL))
 
 
+def _check_blank(diameter, surface_radius):
+    """Both must be real, positive sizes.
+
+    Neither was checked, and neither failure showed: the clamp in
+    effective_surface_radius quietly rescued both. A SurfaceRadius of 0 --
+    no cylinder at all -- anchored the profile at 8.5 because that is what
+    the default Diameter implied, and a Diameter of 0 was simply ignored in
+    favour of the blank. Both built a clean, valid, confidently wrong solid.
+    """
+    if surface_radius <= 0.0:
+        raise ProfileError(
+            "surface radius %.4f is not a cylinder to thread" % surface_radius)
+    if diameter <= 0.0:
+        raise ProfileError(
+            "diameter %.4f is not a thread size" % diameter)
+
+
 def _check_enums(mode, form_name):
     """Validate mode and form_name enums."""
     _check_mode(mode)
@@ -292,6 +309,7 @@ def fill_thickness(mode, diameter, pitch, angle, root_land, crest_land,
     what api.diameter_note does to tell a negligible one from a real one.
     """
     _check_mode(mode)
+    _check_blank(diameter, surface_radius)
     minimum = MIN_FILL if minimum is None else minimum
     required = required_surface_radius(mode, diameter, pitch, angle,
                                        root_land, crest_land, clearance)
@@ -334,6 +352,7 @@ def effective_surface_radius(mode, diameter, pitch, angle, root_land,
     left, spanning from the real surface to the anchored crest.
     """
     _check_mode(mode)
+    _check_blank(diameter, surface_radius)
     required = required_surface_radius(mode, diameter, pitch, angle,
                                        root_land, crest_land, clearance)
     # A sub-micron disagreement is not a request to remove material, it is

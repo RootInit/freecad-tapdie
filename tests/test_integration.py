@@ -1772,6 +1772,142 @@ class TestEdgeCases(unittest.TestCase):
         self._ok(cut)
 
 
+class TestMoreEdgeCases(unittest.TestCase):
+    """A second sweep: persistence, degenerate values, and the limits.
+
+    Probed first, then pinned at what was measured. Two found defects -- a
+    zero SurfaceRadius and a zero Diameter both built clean, valid, wrong
+    solids, because the clamp in effective_surface_radius silently rescued
+    them.
+    """
+
+    def setUp(self):
+        self.doc = App.newDocument("edge2test", hidden=True)
+
+    def tearDown(self):
+        try:
+            App.closeDocument(self.doc.Name)
+        except Exception:
+            pass
+
+    def _cyl_faces(self, obj, radius):
+        return [i + 1 for i, f in enumerate(obj.Shape.Faces)
+                if isinstance(f.Surface, Part.Cylinder)
+                and abs(f.Surface.Radius - radius) < 1e-6]
+
+    # ---- the fillet guard must not over-reach ---------------------------
+
+    def test_a_bore_stays_one_full_face_through_a_boolean(self):
+        """The risk the fillet guard introduced: if a boolean split a bore
+        into two half-faces, rejecting partial cylinders would reject an
+        ordinary tapped hole. Measured across three constructions -- every
+        bore comes out as ONE face sweeping a full 360.
+        """
+        shapes = {
+            "box": Part.makeBox(30, 30, 20, App.Vector(-15, -15, 0)).cut(
+                Part.makeCylinder(4.0, 20.0)),
+            "cylinder": Part.makeCylinder(15.0, 20.0).cut(
+                Part.makeCylinder(4.0, 20.0)),
+        }
+        for name, shape in shapes.items():
+            obj = self.doc.addObject("Part::Feature", "P")
+            obj.Shape = shape
+            self.doc.recompute()
+            faces = self._cyl_faces(obj, 4.0)
+            self.assertEqual(len(faces), 1,
+                             "%s bore split into %d faces" % (name,
+                                                              len(faces)))
+            circle = selection.resolve(obj, "Face%d" % faces[0])
+            self.assertAlmostEqual(circle.radius, 4.0, places=6)
+            self.doc.removeObject(obj.Name)
+
+    # ---- degenerate values ----------------------------------------------
+
+    def test_a_zero_surface_radius_is_refused(self):
+        """There is no cylinder to thread. This used to build: the clamp
+        anchored the profile at 8.5 because the default Diameter implied
+        it, and produced a valid solid with no relation to the input."""
+        obj = feature.make_cutter(self.doc)
+        obj.SurfaceRadius = 0.0
+        self.doc.recompute()
+        with self.assertRaises(api.ThreadError) as caught:
+            api._validate(obj, None)
+        self.assertIn("not a cylinder", str(caught.exception))
+
+    def test_a_zero_diameter_is_refused(self):
+        """Also used to build -- Diameter was simply ignored in favour of
+        the blank, so the thread came out at whatever the blank gave."""
+        obj = feature.make_cutter(self.doc)
+        obj.Diameter = 0.0
+        self.doc.recompute()
+        with self.assertRaises(api.ThreadError) as caught:
+            api._validate(obj, None)
+        self.assertIn("not a thread size", str(caught.exception))
+
+    def test_zero_pitch_length_and_overrun_are_refused(self):
+        for prop in ("Pitch", "Length", "Overrun"):
+            obj = feature.make_cutter(self.doc)
+            setattr(obj, prop, 0.0)
+            self.doc.recompute()
+            with self.assertRaises(api.ThreadError,
+                                   msg="%s = 0 built anyway" % prop):
+                api._validate(obj, None)
+            self.doc.removeObject(obj.Name)
+
+    # ---- limits that are allowed to be ugly, but must not be broken ------
+
+    def test_a_thread_deeper_than_the_wall_still_makes_one_solid(self):
+        """Cutting 0.6mm into a 0.3mm wall really does perforate it -- a
+        helical slot is the honest answer, not an error. What must NOT
+        happen is a severed or invalid part."""
+        obj = self.doc.addObject("Part::Feature", "Tube")
+        obj.Shape = Part.makeCylinder(4.0, 20.0).cut(
+            Part.makeCylinder(3.7, 20.0))
+        self.doc.recompute()
+        face = self._cyl_faces(obj, 4.0)[0]
+        _c, cut = api.create_thread(
+            self.doc, obj, "Face%d" % face,
+            {"Diameter": 8.0, "Pitch": 1.25, "Length": 10.0})
+        self.assertTrue(cut.Shape.isValid())
+        self.assertEqual(len(cut.Shape.Solids), 1,
+                         "the tube was severed into %d pieces"
+                         % len(cut.Shape.Solids))
+
+    def test_a_hundred_turns(self):
+        obj = self.doc.addObject("Part::Cylinder", "Shaft")
+        obj.Radius, obj.Height = 4.0, 60.0
+        self.doc.recompute()
+        face = self._cyl_faces(obj, 4.0)[0]
+        _c, cut = api.create_thread(self.doc, obj, "Face%d" % face,
+                                    {"Pitch": 0.5, "Length": 50.0})
+        self.assertTrue(cut.Shape.isValid())
+        self.assertEqual(len(cut.Shape.Solids), 1)
+
+    # ---- mode and phase ---------------------------------------------------
+
+    def test_flipping_mode_on_an_attached_cutter_recomputes(self):
+        """Internal and External size the blank completely differently, so
+        the flip has to survive a rebuild rather than strand the object."""
+        obj = self.doc.addObject("Part::Cylinder", "Shaft")
+        obj.Radius, obj.Height = 4.0, 30.0
+        self.doc.recompute()
+        face = self._cyl_faces(obj, 4.0)[0]
+        cutter_obj, cut = api.create_thread(self.doc, obj, "Face%d" % face)
+        cutter_obj.Mode = form.INTERNAL
+        self.doc.recompute()
+        self.assertNotIn("Invalid", cutter_obj.State,
+                         "flip failed: %s" % cutter_obj.Proxy.last_error)
+        self.assertNotIn("Invalid", cut.State)
+
+    def test_the_start_angle_wraps_without_complaint(self):
+        obj = feature.make_cutter(self.doc)
+        obj.SurfaceRadius, obj.Pitch, obj.Length = 4.0, 1.25, 8.0
+        for angle in (0.0, 360.0, -360.0, 720.0, 37.5):
+            obj.StartAngle = angle
+            self.doc.recompute()
+            api._validate(obj, None)      # must not raise
+
+
 class TestUndoRemovesTheWholeThread(unittest.TestCase):
     """One Ctrl-Z must remove the cutter AND the boolean, and give the base
     back.
