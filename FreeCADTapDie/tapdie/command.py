@@ -28,13 +28,19 @@ ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(
 
 
 class ThreadTaskPanel(object):
-    """Parameter dialog with a live preview.
+    """Parameter dialog with a live preview of the material to be removed.
 
-    The preview is the real thing: the cutter and the Part::Cut are created
-    the moment the dialog opens, inside an undo transaction, and are
-    re-parameterised in place as the controls change. OK commits that
-    transaction; Cancel aborts it and removes the objects. There is no
-    separate "preview mode" geometry that could disagree with the result.
+    The preview shows the CUTTER -- translucent red, over the part left
+    intact -- and not the result of the boolean. The cutter solid is exactly
+    the material the thread would take out, so it says the same thing, and it
+    avoids consuming the part for something the user has not committed to
+    yet: FreeCAD hides a Part::Cut's Base as soon as the Cut exists, so
+    building the boolean up front made the part vanish the instant the dialog
+    opened. This is also how FreeCAD's own Part tools preview.
+
+    The cutter is the real object, re-parameterised in place as the controls
+    change, so there is no separate preview geometry that could disagree with
+    the result. The boolean happens once, on OK.
     """
 
     def __init__(self, base, sub_name, circle, defaults):
@@ -158,14 +164,17 @@ class ThreadTaskPanel(object):
                 ValueError)
 
     def _build(self):
-        """Create the preview objects inside an undo transaction."""
+        """Create the preview CUTTER inside an undo transaction.
+
+        No boolean here -- see the class docstring.
+        """
         from . import api
 
         doc = self.doc
         doc.openTransaction("Thread")
         self.transaction_open = True
         try:
-            self.cutter_obj, self.cut = api.build_thread(
+            self.cutter_obj = api.build_cutter(
                 doc, self.base, self.sub_name, self.overrides(), self.created)
             self.preview_ok = True
         except self._errors() as exc:
@@ -185,6 +194,7 @@ class ThreadTaskPanel(object):
             self._build()
             return
         try:
+            # cut is None during the preview: only the cutter exists yet.
             api.update_thread(self.cutter_obj, self.cut, self.overrides())
             self.preview_ok = True
         except self._errors() as exc:
@@ -226,6 +236,26 @@ class ThreadTaskPanel(object):
                 "The thread does not build with these settings, so there is "
                 "nothing to apply.\n\n%s" % self.note.text())
             return False
+
+        # The boolean happens HERE, not during the preview. It can still
+        # fail on geometry the cutter itself was happy with -- a helical
+        # Part::Cut is known to return a closed solid that is nevertheless
+        # invalid -- so roll just the Cut back and keep the dialog open
+        # rather than committing a broken result.
+        from . import api
+        try:
+            self.cut = api.apply_cut(self.doc, self.base, self.cutter_obj,
+                                     self.created)
+        except self._errors() as exc:
+            if self.cut is None and self.created \
+                    and self.created[-1] is not self.cutter_obj:
+                api.discard(self.doc, self.created.pop())
+            self._say(exc)
+            QtGui.QMessageBox.warning(
+                self.form, "Tap / Die",
+                "The cutter built, but the boolean did not.\n\n%s" % exc)
+            return False
+
         self.doc.commitTransaction()
         self.transaction_open = False
         Gui.Control.closeDialog()

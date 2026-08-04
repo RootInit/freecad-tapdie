@@ -106,20 +106,35 @@ baseline = {o.Name for o in doc.Objects}
 # --- opens with a preview already built ------------------------------------
 panel, circle = panel_for(doc, base, sub)
 check("preview builds on open", panel.preview_ok, panel.note.text())
-check("preview created a cutter and a cut",
-      panel.cutter_obj is not None and panel.cut is not None)
-check("cut is a single valid solid",
-      panel.cut is not None and panel.cut.Shape.isValid()
-      and len(panel.cut.Shape.Solids) == 1)
+check("preview created a cutter", panel.cutter_obj is not None)
+check("preview did NOT create the boolean", panel.cut is None)
+check("preview added exactly one object",
+      len({o.Name for o in doc.Objects} - baseline) == 1,
+      "added: %s" % sorted({o.Name for o in doc.Objects} - baseline))
+check("no Part::Cut exists during the preview",
+      not any(o.TypeId == "Part::Cut" for o in doc.Objects),
+      [o.Name for o in doc.Objects if o.TypeId == "Part::Cut"])
+check("the part itself is untouched and still visible",
+      base.Shape.Volume > 0.0 and base.ViewObject.Visibility)
+check("the cutter is a single valid solid",
+      panel.cutter_obj.Shape.isValid()
+      and len(panel.cutter_obj.Shape.Solids) >= 1)
+check("the cutter is drawn translucent red",
+      panel.cutter_obj.ViewObject.Transparency > 0
+      and panel.cutter_obj.ViewObject.ShapeColor[0] > 0.5
+      and panel.cutter_obj.ViewObject.ShapeColor[1] < 0.5,
+      "colour=%s transparency=%s"
+      % (panel.cutter_obj.ViewObject.ShapeColor,
+         panel.cutter_obj.ViewObject.Transparency))
 
 # --- direction re-parameterises in place -----------------------------------
-names_before = (panel.cutter_obj.Name, panel.cut.Name)
+names_before = (panel.cutter_obj.Name,)
 count_before = len(doc.Objects)
 panel.direction.setCurrentText(form.FORWARD)
 panel.timer.stop()          # fire the debounce by hand, no event loop here
 panel._rebuild()
 check("direction change kept the same objects",
-      (panel.cutter_obj.Name, panel.cut.Name) == names_before)
+      (panel.cutter_obj.Name,) == names_before)
 check("direction change leaked nothing",
       len(doc.Objects) == count_before,
       "%d -> %d" % (count_before, len(doc.Objects)))
@@ -185,8 +200,10 @@ check("Cancel restored the document exactly",
 # --- ok commits -------------------------------------------------------------
 panel, circle = panel_for(doc, base, sub)
 check("second preview builds", panel.preview_ok, panel.note.text())
-cutter_name, cut_name = panel.cutter_obj.Name, panel.cut.Name
+cutter_name = panel.cutter_obj.Name
 check("accept() applies", guarded("accept()", panel.accept) is True)
+check("accept() created the boolean", panel.cut is not None)
+cut_name = panel.cut.Name if panel.cut is not None else "<none>"
 doc.recompute()
 names = {o.Name for o in doc.Objects}
 check("OK kept the cutter and the cut",

@@ -113,13 +113,16 @@ def _validate(cutter_obj, cut):
             "boolean produced %d solids, expected 1" % len(cut.Shape.Solids))
 
 
-def build_thread(doc, base, sub_name, overrides=None, created=None):
-    """Create the cutter and the boolean.  Returns (cutter, cut).
+def build_cutter(doc, base, sub_name, overrides=None, created=None):
+    """Create and parameterise the cutter ALONE.  No boolean.
 
-    NO transaction and NO cleanup: the caller owns both.  create_thread()
-    wraps this for one-shot use; the task panel calls it directly so it can
-    keep the objects alive as a live preview and roll the whole thing back on
-    Cancel.
+    This is what the task panel previews: the cutter solid is exactly the
+    material the thread would remove, so showing it translucent-red over the
+    untouched part says the same thing as performing the cut, without
+    consuming the part or needing to be undone if the user changes their
+    mind.  It is also how FreeCAD's own Part tools preview.
+
+    NO transaction and NO cleanup: the caller owns both.
 
     `created` is an optional list this appends each new object to as it goes,
     so a caller can clean up precisely after a mid-way failure.  Never
@@ -144,13 +147,34 @@ def build_thread(doc, base, sub_name, overrides=None, created=None):
     cutter_obj.LocalPlacement = local_frame(base, circle)
     doc.recompute()
     _validate(cutter_obj, None)
+    return cutter_obj
 
+
+def apply_cut(doc, base, cutter_obj, created=None):
+    """Perform the boolean, consuming `base` with `cutter_obj`.
+
+    Separate from build_cutter so the panel can leave this until the user
+    actually commits.  FreeCAD hides Base and Tool as soon as the Part::Cut
+    exists, which is why doing it during a preview would make the part
+    disappear the moment the dialog opened.
+    """
+    if created is None:
+        created = []
     cut = doc.addObject("Part::Cut", "Thread")
     created.append(cut)
     cut.Base = base
     cut.Tool = cutter_obj
     doc.recompute()
     _validate(cutter_obj, cut)
+    return cut
+
+
+def build_thread(doc, base, sub_name, overrides=None, created=None):
+    """Create the cutter and the boolean.  Returns (cutter, cut)."""
+    if created is None:
+        created = []
+    cutter_obj = build_cutter(doc, base, sub_name, overrides, created)
+    cut = apply_cut(doc, base, cutter_obj, created)
     return cutter_obj, cut
 
 

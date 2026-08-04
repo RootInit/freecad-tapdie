@@ -851,6 +851,52 @@ class TestCreateThread(unittest.TestCase):
             "no thread material found near the far end (z=%.3f of [%.3f, "
             "%.3f])" % (z1 - margin, z0, z1))
 
+    def test_build_cutter_performs_no_boolean(self):
+        """The preview shows the material to be removed, not the result.
+
+        A Part::Cut hides its Base the moment it exists, so building the
+        boolean up front made the part vanish as the dialog opened.
+        """
+        base = self._bored_block()
+        face = self._bore_face(base, 3.4)
+        before = len(self.doc.Objects)
+        cutter_obj = api.build_cutter(self.doc, base, face)
+        self.assertEqual(len(self.doc.Objects), before + 1,
+                         "build_cutter created more than the cutter")
+        self.assertFalse(
+            [o for o in self.doc.Objects if o.TypeId == "Part::Cut"],
+            "build_cutter performed a boolean")
+        self.assertTrue(cutter_obj.Shape.isValid())
+        self.assertTrue(cutter_obj.Shape.Solids)
+
+    def test_build_cutter_leaves_the_part_intact(self):
+        base = self._bored_block()
+        face = self._bore_face(base, 3.4)
+        volume = base.Shape.Volume
+        api.build_cutter(self.doc, base, face)
+        self.assertAlmostEqual(base.Shape.Volume, volume, places=6,
+                               msg="the preview modified the part")
+
+    def test_apply_cut_finishes_the_job(self):
+        base = self._bored_block()
+        face = self._bore_face(base, 3.4)
+        volume = base.Shape.Volume
+        cutter_obj = api.build_cutter(self.doc, base, face)
+        cut = api.apply_cut(self.doc, base, cutter_obj)
+        self.assertEqual(cut.TypeId, "Part::Cut")
+        self.assertEqual(len(cut.Shape.Solids), 1)
+        self.assertLess(cut.Shape.Volume, volume,
+                        "the boolean removed nothing")
+
+    def test_build_thread_is_still_the_two_together(self):
+        """create_thread's one-shot path must be unchanged by the split."""
+        base = self._bored_block()
+        face = self._bore_face(base, 3.4)
+        cutter_obj, cut = api.build_thread(self.doc, base, face)
+        self.assertEqual(cut.Tool.Name, cutter_obj.Name)
+        self.assertEqual(cut.Base.Name, base.Name)
+        self.assertEqual(len(cut.Shape.Solids), 1)
+
     def test_abort_alone_does_not_remove_what_build_thread_created(self):
         """WHY the panel's Cancel calls discard() and not just abort.
 
