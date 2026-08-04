@@ -453,6 +453,64 @@ check("and did not disturb the flank clearance",
       "Clearance=%s" % panel6.cutter_obj.Clearance.Value)
 guarded("reject() the simple/advanced panel", panel6.reject)
 
+# --- the print test piece ---------------------------------------------------
+# Only the panel can turn this on, so only an offscreen GUI can check that OK
+# really builds it, that it lands inside the same transaction, and that
+# Cancel takes it back out again.
+doc7 = App.newDocument("coupon")
+App.setActiveDocument(doc7.Name)
+base7, sub7 = shaft(doc7, radius=4.0, height=20.0)
+baseline7 = {o.Name for o in doc7.Objects}
+
+panel7, _c7 = panel_for(doc7, base7, sub7)
+check("test piece is off by default", not panel7.test_piece.isChecked())
+check("test piece is an advanced setting",
+      any(w is panel7.test_piece for _l, w in panel7.advanced_rows))
+panel7.test_piece.setChecked(True)
+check("ticking it does NOT mark the preview stale", not panel7.stale,
+      "it adds separate objects and changes no previewed geometry")
+
+# Cancel first: the coupon must not survive a dialog the user backed out of.
+guarded("reject() with the test piece ticked", panel7.reject)
+doc7.recompute()
+check("Cancel leaves no test piece behind",
+      {o.Name for o in doc7.Objects} == baseline7,
+      "left: %s" % sorted({o.Name for o in doc7.Objects} - baseline7))
+
+panel7, _c7 = panel_for(doc7, base7, sub7)
+panel7.test_piece.setChecked(True)
+check("accept() applies with a test piece",
+      guarded("accept() with test piece", panel7.accept) is True)
+doc7.recompute()
+labels = [o.Label for o in doc7.Objects if "Test piece" in o.Label]
+check("both halves of the coupon exist", len(labels) >= 2,
+      "labels: %s" % labels)
+coupons = [o for o in doc7.Objects
+           if o.TypeId == "Part::Cut" and "Test piece" in o.Label]
+check("both halves are single valid solids",
+      len(coupons) == 2
+      and all(c.Shape.isValid() and len(c.Shape.Solids) == 1
+              for c in coupons),
+      "%d coupon solids" % len(coupons))
+if len(coupons) == 2:
+    boxes = [c.Shape.optimalBoundingBox() for c in coupons]
+    tallest = max(b.ZLength for b in boxes)
+    widest = max(b.XLength for b in boxes)
+    check("the coupon is small enough to be worth printing",
+          tallest < 30.0 and widest < 40.0,
+          "%.1f tall, %.1f wide" % (tallest, widest))
+    check("the coupon is clear of the part being threaded",
+          min(b.XMin for b in boxes)
+          >= base7.Shape.optimalBoundingBox().XMax - 1e-6,
+          "coupon XMin %.3f vs part XMax %.3f"
+          % (min(b.XMin for b in boxes),
+             base7.Shape.optimalBoundingBox().XMax))
+doc7.undo()
+doc7.recompute()
+left7 = sorted({o.Name for o in doc7.Objects} - baseline7)
+check("undo took the coupon with the thread", not left7,
+      "left: %s" % left7)
+
 line("")
 line("PREVIEW DIAG: %d failure(s)" % len(failures))
 for name in failures:

@@ -214,6 +214,15 @@ class ThreadTaskPanel(object):
         self.left_handed = QtGui.QCheckBox()
         row("Left handed", self.left_handed, advanced=True)
 
+        self.test_piece = QtGui.QCheckBox()
+        self.test_piece.setToolTip(
+            "Also build a small male/female pair beside the part, cut with "
+            "these exact settings, to print and try before committing.\n"
+            "It goes through the same cutter as the real thread, so if the "
+            "coupon screws together the settings are right. Adds a few "
+            "seconds to OK.")
+        row("Print test piece", self.test_piece, advanced=True)
+
         # SIMPLE BY DEFAULT. Mode, Form, Diameter, Pitch, Length, Direction
         # and Clearance are enough to cut a thread; everything else is either
         # preset-driven or a detail most users never touch, and thirteen rows
@@ -248,6 +257,9 @@ class ThreadTaskPanel(object):
             widget.valueChanged.connect(self._touch)
         for widget in (self.left_handed, self.flush_ends):
             widget.toggled.connect(self._touch)
+        # test_piece deliberately NOT connected: it adds separate objects on
+        # OK and changes nothing about the previewed cutter, so marking the
+        # preview stale would ask the user to refresh for no reason.
 
         self._sync_advanced()
         self._sync_form_controls()
@@ -475,10 +487,34 @@ class ThreadTaskPanel(object):
                 "The cutter built, but the boolean did not.\n\n%s" % exc)
             return False
 
+        if self.test_piece.isChecked():
+            # Inside the SAME transaction and appended to self.created, so a
+            # later Cancel or one Ctrl-Z takes the coupon with the thread.
+            from . import testpiece
+            try:
+                testpiece.build(self.doc, self.overrides(), self.created,
+                                self._test_piece_origin())
+            except self._errors() as exc:
+                self._say(exc)
+                QtGui.QMessageBox.warning(
+                    self.form, "Tap / Die",
+                    "The thread was applied, but the test piece could not "
+                    "be built.\n\n%s" % exc)
+
         self.doc.commitTransaction()
         self.transaction_open = False
         Gui.Control.closeDialog()
         return True
+
+    def _test_piece_origin(self):
+        """Put the coupon clear of the part rather than inside it."""
+        from . import testpiece
+
+        try:
+            box = self.base.Shape.optimalBoundingBox()
+        except Exception:
+            return App.Vector(0, 0, 0)
+        return App.Vector(box.XMax + testpiece.SPACING, box.YMin, 0.0)
 
     def reject(self):
         doc = self.doc

@@ -1232,6 +1232,121 @@ class TestCreateThread(unittest.TestCase):
                     % direction)
 
 
+class TestPrintTestPiece(unittest.TestCase):
+    """The coupon exists to answer "do MY settings mate on MY printer?", so
+    what matters is that it goes through the same cutter as the real thread
+    and comes out at nominal with nothing relieved."""
+
+    def setUp(self):
+        self.doc = App.newDocument("couponstest", hidden=True)
+
+    def tearDown(self):
+        App.closeDocument(self.doc.Name)
+
+    def _params(self, **over):
+        params = {
+            "Mode": form.EXTERNAL, "ThreadForm": form.PRINTED,
+            "Diameter": 8.0, "Pitch": 1.25, "Length": 10.0,
+            "Direction": form.BOTH, "Clearance": 0.12,
+            "FlatClearance": 0.12, "Overrun": 1.0, "StartAngle": 0.0,
+            "FlushEnds": True, "LeftHanded": False,
+        }
+        params.update(over)
+        return params
+
+    def test_builds_a_mated_pair(self):
+        from tapdie import testpiece
+
+        created = []
+        male, female = testpiece.build(self.doc, self._params(), created)
+        for obj, what in ((male, "male"), (female, "female")):
+            self.assertFalse(obj.Shape.isNull(), "%s is null" % what)
+            self.assertTrue(obj.Shape.isValid(), "%s is invalid" % what)
+            self.assertEqual(len(obj.Shape.Solids), 1,
+                             "%s is not one solid" % what)
+            self.assertGreater(obj.Shape.Volume, 0.0)
+        self.assertGreaterEqual(len(created), 6,
+                                "every object must be tracked for undo")
+
+    def test_the_pieces_do_not_overlap(self):
+        """They print side by side, so they must not share space."""
+        from tapdie import testpiece
+
+        male, female = testpiece.build(self.doc, self._params())
+        m = male.Shape.optimalBoundingBox()
+        f = female.Shape.optimalBoundingBox()
+        self.assertGreater(f.XMin, m.XMax - 1e-6,
+                           "the coupon halves intersect: male XMax %.3f, "
+                           "female XMin %.3f" % (m.XMax, f.XMin))
+
+    def test_neither_blank_needs_relieving(self):
+        """Both are cut at nominal, so a bad fit means the CLEARANCE is
+        wrong -- never the blank. api.diameter_note must stay silent."""
+        from tapdie import testpiece
+
+        created = []
+        testpiece.build(self.doc, self._params(), created)
+        cutters = [o for o in created
+                   if getattr(getattr(o, "Proxy", None), "Type", None)
+                   == "ThreadCutter"]
+        self.assertEqual(len(cutters), 2)
+        for cutter_obj in cutters:
+            self.assertIsNone(
+                api.diameter_note(cutter_obj),
+                "%s blank is the wrong size: %s"
+                % (cutter_obj.Mode, api.diameter_note(cutter_obj)))
+
+    def test_it_carries_the_settings_it_was_given(self):
+        """A coupon cut with different settings than the part would answer a
+        question nobody asked."""
+        from tapdie import testpiece
+
+        created = []
+        params = self._params(Pitch=2.0, Clearance=0.2, FlatClearance=0.3,
+                              LeftHanded=True, StartAngle=30.0)
+        testpiece.build(self.doc, params, created)
+        cutters = [o for o in created
+                   if getattr(getattr(o, "Proxy", None), "Type", None)
+                   == "ThreadCutter"]
+        for cutter_obj in cutters:
+            self.assertAlmostEqual(cutter_obj.Pitch.Value, 2.0, places=9)
+            self.assertAlmostEqual(cutter_obj.Clearance.Value, 0.2, places=9)
+            self.assertAlmostEqual(cutter_obj.FlatClearance.Value, 0.3,
+                                   places=9)
+            self.assertTrue(cutter_obj.LeftHanded)
+            self.assertAlmostEqual(cutter_obj.StartAngle.Value, 30.0,
+                                   places=9)
+
+    def test_each_piece_gets_its_own_mode(self):
+        from tapdie import testpiece
+
+        created = []
+        testpiece.build(self.doc, self._params(), created)
+        modes = sorted(o.Mode for o in created
+                       if getattr(getattr(o, "Proxy", None), "Type", None)
+                       == "ThreadCutter")
+        self.assertEqual(modes, [form.EXTERNAL, form.INTERNAL])
+
+    def test_thread_length_stays_small_at_any_pitch(self):
+        from tapdie import testpiece
+
+        for pitch in (0.4, 1.25, 3.8, 10.0):
+            length = testpiece.thread_length(pitch)
+            self.assertGreaterEqual(length, testpiece.MIN_THREAD)
+            self.assertLessEqual(length, testpiece.MAX_THREAD,
+                                 "pitch %.2f made a %.1fmm coupon"
+                                 % (pitch, length))
+
+    def test_a_coarse_pitch_still_gets_several_turns(self):
+        from tapdie import testpiece
+
+        for pitch in (0.5, 1.25, 2.5):
+            turns = testpiece.thread_length(pitch) / pitch
+            self.assertGreaterEqual(turns, 3.0,
+                                    "pitch %.2f gives only %.1f turns"
+                                    % (pitch, turns))
+
+
 class TestUndoRemovesTheWholeThread(unittest.TestCase):
     """One Ctrl-Z must remove the cutter AND the boolean, and give the base
     back.
