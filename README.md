@@ -8,12 +8,20 @@ It is aimed at **FDM printing**. The default form is a 90° included angle,
 which puts every flank at exactly the 45° overhang limit; standard ISO 60° is
 available but droops when printed axis-vertical.
 
-Status: 0.1.0, works, tested headlessly and through an offscreen GUI. Not yet
-listed in the FreeCAD Addon Manager.
+[![tests](https://github.com/RootInit/freecad-tapdie/actions/workflows/tests.yml/badge.svg)](https://github.com/RootInit/freecad-tapdie/actions/workflows/tests.yml)
+
+**Version 0.2.0.** Requires **FreeCAD 1.1** — the only release it has been run
+on. Not yet listed in the FreeCAD Addon Manager's own catalogue; install it as
+a custom repository or by hand, both below. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
 
-Clone (or symlink) `FreeCADTapDie/` into your FreeCAD Mod directory:
+**Via the Addon Manager.** *Tools → Addon manager → ⚙ → Custom repositories*,
+add `https://github.com/RootInit/freecad-tapdie` on branch `master`, then find
+**TapDie** in the list.
+
+**By hand.** Clone or symlink `FreeCADTapDie/` into your FreeCAD Mod
+directory:
 
 ```sh
 git clone https://github.com/RootInit/freecad-tapdie
@@ -23,6 +31,11 @@ ln -s "$PWD/freecad-tapdie/FreeCADTapDie" ~/.FreeCAD/Mod/TapDie
 Flatpak users want
 `~/.var/app/org.freecad.FreeCAD/data/FreeCAD/v1-1/Mod/` instead. Restart
 FreeCAD; **Tap / Die...** appears in the Part workbench's menu and toolbar.
+
+If it does not appear, that is worth reporting rather than debugging: this
+addon has three separate ways of failing to load *silently*, all of them
+fixed, all of them regression-tested, and none of which said anything in the
+Report view at the time.
 
 ## Use
 
@@ -122,6 +135,11 @@ handedness, and whether material may be added.
 
 The `fc` and `diag` halves assume FreeCAD is installed as the
 `org.freecad.FreeCAD` flatpak; edit `FC` in `run_tests.sh` otherwise.
+
+**CI runs the `pure` half only.** The other two need a real FreeCAD, and a CI
+run that quietly skipped them would be worse than none — green for a third of
+the suite while the geometry and the task panel went unchecked. Run the whole
+thing locally before tagging a release.
 
 `diag` matters more than its size suggests: `freecadcmd` never runs
 `InitGui.py` and has no `FreeCADGui`, so command registration, the task panel,

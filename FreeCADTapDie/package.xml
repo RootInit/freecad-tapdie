@@ -1,11 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
   <name>TapDie</name>
-  <description>Thread any cylinder by selecting a circular profile.</description>
-  <version>0.1.1</version>
+  <description>Cut a real helical thread into a cylinder you already have. Tuned for FDM printing.</description>
+  <version>0.2.0</version>
   <date>2026-08-04</date>
   <maintainer email="root@init.cx">Alexander</maintainer>
-  <license>LGPL-2.1-or-later</license>
+  <license file="LICENSE">LGPL-2.1-or-later</license>
+  <url type="repository" branch="master">https://github.com/RootInit/freecad-tapdie</url>
+  <url type="readme">https://github.com/RootInit/freecad-tapdie/blob/master/README.md</url>
+  <url type="bugtracker">https://github.com/RootInit/freecad-tapdie/issues</url>
+  <icon>resources/icons/tapdie_cutter.svg</icon>
+  <tag>thread</tag>
+  <tag>tap</tag>
+  <tag>die</tag>
+  <tag>3d-printing</tag>
+  <!-- Version floor, stated honestly: 1.1 is the only release this has ever
+       been run on, and the addon depends on behaviour that has moved before
+       (PartDesign::AdditiveHelix, addWorkbenchManipulator, and the
+       package.xml content rules below). No ceiling, so a newer FreeCAD is
+       allowed to try. -->
+  <freecadmin>1.1</freecadmin>
   <!-- MUST be <workbench>, even though this addon adds no workbench of its
        own. FreeCAD 1.1 parses package.xml and only executes InitGui.py for
        content declared <workbench>. Under <other> the directory is still put
@@ -18,7 +32,8 @@
        completely. The parse error goes to stdout only, never to the Report
        view, so it is invisible to anyone running FreeCAD from a desktop
        launcher. (An XML comment may not contain a doubled hyphen; one here
-       cost a debugging cycle.) -->
+       cost a debugging cycle.) Every edit to this file is checked by
+       loading it, not by reading it: tools/diag_gui.py. -->
   <content>
     <workbench>
       <name>TapDie</name>

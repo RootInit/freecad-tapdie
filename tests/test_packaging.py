@@ -44,6 +44,57 @@ class PackageMetadataTest(unittest.TestCase):
         # propagate names the line and column, same as FreeCAD's own message.
         ET.parse(PACKAGE_XML)
 
+    def test_the_metadata_the_addon_manager_shows_is_present(self):
+        """Without these the listing has no links and no version floor.
+
+        Pinned individually rather than as a set, so dropping one names
+        itself instead of failing as "metadata is wrong somewhere".
+        """
+        root = ET.parse(PACKAGE_XML).getroot()
+        for tag in ("name", "description", "version", "maintainer",
+                    "license", "freecadmin", "icon"):
+            node = root.find(NS + tag)
+            self.assertIsNotNone(node, "package.xml has no <%s>" % tag)
+            self.assertTrue((node.text or "").strip(),
+                            "<%s> is empty" % tag)
+
+    def test_the_repository_and_bugtracker_are_linked(self):
+        root = ET.parse(PACKAGE_XML).getroot()
+        urls = dict((u.get("type"), (u.text or "").strip())
+                    for u in root.findall(NS + "url"))
+        for kind in ("repository", "readme", "bugtracker"):
+            self.assertIn(kind, urls, "package.xml has no %s url" % kind)
+            self.assertTrue(urls[kind].startswith("https://"),
+                            "%s url is not https: %r" % (kind, urls[kind]))
+        self.assertIsNotNone(
+            root.find(NS + "url[@type='repository']").get("branch"),
+            "the repository url needs the branch the Addon Manager clones")
+
+    def test_the_version_is_a_plain_three_part_number(self):
+        root = ET.parse(PACKAGE_XML).getroot()
+        version = root.find(NS + "version").text.strip()
+        parts = version.split(".")
+        self.assertEqual(len(parts), 3, "version %r is not x.y.z" % version)
+        for part in parts:
+            self.assertTrue(part.isdigit(),
+                            "version %r has a non-numeric part" % version)
+
+    def test_the_version_floor_is_one_we_have_actually_run_on(self):
+        """1.1 is the only release this has been tested against, and a floor
+        below that would be a guess presented as a promise."""
+        root = ET.parse(PACKAGE_XML).getroot()
+        self.assertEqual(root.find(NS + "freecadmin").text.strip(), "1.1")
+
+    def test_the_changelog_records_this_version(self):
+        root = ET.parse(PACKAGE_XML).getroot()
+        version = root.find(NS + "version").text.strip()
+        changelog = os.path.join(os.path.dirname(ADDON), "CHANGELOG.md")
+        self.assertTrue(os.path.exists(changelog), "no CHANGELOG.md")
+        with open(changelog) as handle:
+            text = handle.read()
+        self.assertIn("[%s]" % version, text,
+                      "CHANGELOG.md does not mention version %s" % version)
+
     def test_content_is_declared_as_a_workbench(self):
         root = ET.parse(PACKAGE_XML).getroot()
         content = root.find(NS + "content")
